@@ -1,18 +1,17 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import {
   FolderClosed,
   FolderPlus,
+  GitMerge,
   Inbox,
   Layers,
   Loader2,
   Package,
   Pencil,
   Plus,
-  RefreshCw,
   Rocket,
   Search,
   Sparkles,
@@ -61,17 +60,67 @@ export default function PartsPage() {
 }
 
 function PartsInner() {
-  const params = useSearchParams();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>("all");
   const [priority, setPriority] = useState<string>("all");
   const [type, setType] = useState<string>("all");
   const [folderFilter, setFolderFilter] = useState<FolderFilter>("all");
-  const designChangedOnly = params.get("designChanged") === "1";
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [batchKeyDraft, setBatchKeyDraft] = useState("");
 
   const utils = trpc.useUtils();
   const folders = trpc.folders.list.useQuery();
   const batches = trpc.parts.listBatches.useQuery();
+  const groupAsBatch = trpc.parts.groupAsBatch.useMutation({
+    onSuccess: () => {
+      utils.parts.list.invalidate();
+      utils.parts.listBatches.invalidate();
+      toast.success("Batch created");
+      setBatchDialogOpen(false);
+      setBatchKeyDraft("");
+      setSelectedIds(new Set());
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const bulkSetFolder = trpc.parts.bulkSetFolder.useMutation({
+    onSuccess: (res) => {
+      utils.parts.list.invalidate();
+      utils.folders.list.invalidate();
+      toast.success(`Moved ${res.moved} part${res.moved === 1 ? "" : "s"}`);
+      setSelectedIds(new Set());
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  // Fire-and-forget: backfill missing onshapeVersionName for older imports.
+  // The mutation is idempotent — returns { scanned: 0 } when nothing's left.
+  const backfillVersionNames = trpc.parts.backfillVersionNames.useMutation({
+    onSuccess: (res) => {
+      if (res.updated > 0) {
+        utils.parts.list.invalidate();
+      }
+    },
+  });
+  const ranBackfillRef = useRef(false);
+  useEffect(() => {
+    if (ranBackfillRef.current) return;
+    ranBackfillRef.current = true;
+    backfillVersionNames.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const bulkStart = trpc.parts.bulkStartManufacturing.useMutation({
+    onSuccess: (res) => {
+      utils.parts.list.invalidate();
+      utils.dashboard.summary.invalidate();
+      utils.machines.list.invalidate();
+      toast.success(
+        `Started ${res.queued} of ${res.total} part${res.total === 1 ? "" : "s"}`,
+      );
+      setSelectedIds(new Set());
+    },
+    onError: (e) => toast.error(e.message),
+  });
   const startBatch = trpc.parts.startBatch.useMutation({
     onSuccess: (res) => {
       utils.parts.list.invalidate();
@@ -90,7 +139,6 @@ function PartsInner() {
       status: status === "all" ? undefined : (status as "ready_to_make"),
       priority: priority === "all" ? undefined : (priority as "high"),
       type: type === "all" ? undefined : (type as "custom" | "cots"),
-      designChanged: designChangedOnly || undefined,
       folderId:
         folderFilter === "all"
           ? undefined
@@ -100,25 +148,6 @@ function PartsInner() {
     },
     { refetchInterval: 30_000 },
   );
-
-  const bulkSync = trpc.parts.bulkSyncRevisions.useMutation({
-    onSuccess: (res) => {
-      utils.parts.list.invalidate();
-      utils.dashboard.summary.invalidate();
-      if (res.failed > 0) {
-        toast.warning(
-          `Sync done: ${res.changed} changed, ${res.unchanged} up to date, ${res.failed} failed.`,
-        );
-      } else if (res.changed > 0) {
-        toast.warning(
-          `${res.changed} part${res.changed === 1 ? "" : "s"} changed in Onshape — review them.`,
-        );
-      } else {
-        toast.success(`All ${res.unchanged} parts up to date.`);
-      }
-    },
-    onError: (e) => toast.error(e.message),
-  });
 
   const total = list.data?.length ?? 0;
 
@@ -130,23 +159,11 @@ function PartsInner() {
             Parts
           </h1>
           <p className="text-muted-foreground mt-1">
-            Every part imported from Onshape, with status, routing, and live
-            design-change alerts.
+            Every part imported from Onshape, pinned to a specific Version.
+            Re-pin individually or in bulk when the design moves forward.
           </p>
         </div>
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => bulkSync.mutate({})}
-            disabled={bulkSync.isPending}
-          >
-            {bulkSync.isPending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Check all for updates
-          </Button>
           <Button asChild variant="outline">
             <Link href="/templates">
               <Layers className="h-4 w-4" />
@@ -272,12 +289,87 @@ function PartsInner() {
             </CardContent>
           </Card>
 
+          {selectedIds.size > 0 && (
+            <Card className="border-primary/60 bg-primary/5">
+              <CardContent className="p-3 flex items-center gap-3 flex-wrap">
+                <span className="text-sm font-medium">
+                  {selectedIds.size} selected
+                </span>
+                <span className="text-xs text-muted-foreground hidden md:inline">
+                  ·
+                </span>
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={() => setBatchDialogOpen(true)}
+                >
+                  <Package className="h-3.5 w-3.5" />
+                  Group as batch
+                </Button>
+                <Select
+                  value=""
+                  onValueChange={(v) => {
+                    bulkSetFolder.mutate({
+                      ids: [...selectedIds],
+                      folderId: v === "__none__" ? null : v,
+                    });
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-[180px] text-xs">
+                    <SelectValue placeholder="Move to folder…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No folder</SelectItem>
+                    {(folders.data?.folders ?? []).map((f) => (
+                      <SelectItem key={f.folder.id} value={f.folder.id}>
+                        {f.folder.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    bulkStart.mutate({ ids: [...selectedIds] })
+                  }
+                  disabled={bulkStart.isPending}
+                >
+                  <Rocket className="h-3.5 w-3.5" />
+                  Start manufacturing
+                </Button>
+                <BulkUpdateVersionButton
+                  selectedIds={selectedIds}
+                  parts={list.data ?? []}
+                  onDone={() => setSelectedIds(new Set())}
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedIds(new Set())}
+                  className="ml-auto"
+                >
+                  Clear
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
             {list.data?.map((p) => (
               <PartListRow
                 key={p.id}
                 part={p}
                 folders={folders.data?.folders.map((f) => f.folder) ?? []}
+                selected={selectedIds.has(p.id)}
+                onSelectedChange={(c) =>
+                  setSelectedIds((s) => {
+                    const next = new Set(s);
+                    if (c) next.add(p.id);
+                    else next.delete(p.id);
+                    return next;
+                  })
+                }
               />
             ))}
             {list.isLoading && (
@@ -311,7 +403,173 @@ function PartsInner() {
           </div>
         </div>
       </div>
+
+      <Dialog open={batchDialogOpen} onOpenChange={setBatchDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Group as batch</DialogTitle>
+            <DialogDescription>
+              Tag {selectedIds.size} part
+              {selectedIds.size === 1 ? "" : "s"} with a shared batch label so
+              they run together. You can still start them individually later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="batch-key">Batch label</Label>
+            <Input
+              id="batch-key"
+              placeholder="e.g. gussets-batch-1"
+              value={batchKeyDraft}
+              onChange={(e) => setBatchKeyDraft(e.target.value)}
+              autoFocus
+            />
+            <span className="text-[11px] text-muted-foreground">
+              Shows up as a chip on each part and on the Batches strip above
+              the parts list.
+            </span>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setBatchDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() =>
+                groupAsBatch.mutate({
+                  ids: [...selectedIds],
+                  batchKey: batchKeyDraft.trim() || `batch-${Date.now().toString(36)}`,
+                })
+              }
+              disabled={groupAsBatch.isPending}
+            >
+              <Package className="h-4 w-4" />
+              Group
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+function BulkUpdateVersionButton({
+  selectedIds,
+  parts,
+  onDone,
+}: {
+  selectedIds: Set<string>;
+  parts: Array<{
+    id: string;
+    onshapeDocumentId: string | null;
+    onshapeVersionId: string | null;
+  }>;
+  onDone: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const [open, setOpen] = useState(false);
+
+  // Bulk update is only meaningful when all selected parts share a doc.
+  const selectedParts = parts.filter((p) => selectedIds.has(p.id));
+  const docs = new Set(
+    selectedParts
+      .map((p) => p.onshapeDocumentId)
+      .filter((d): d is string => !!d),
+  );
+  const sharedDocumentId = docs.size === 1 ? [...docs][0] : null;
+
+  const versions = trpc.parts.documentVersions.useQuery(
+    { documentId: sharedDocumentId ?? "" },
+    { enabled: open && !!sharedDocumentId, retry: false },
+  );
+  const bulkUpdate = trpc.parts.bulkUpdateToVersion.useMutation({
+    onSuccess: (res) => {
+      utils.parts.list.invalidate();
+      utils.dashboard.summary.invalidate();
+      if (res.failed > 0) {
+        toast.warning(
+          `Updated ${res.updated}; ${res.failed} failed. Check the console.`,
+        );
+        // eslint-disable-next-line no-console
+        console.warn("Bulk version update errors:", res.errors);
+      } else {
+        toast.success(
+          `Updated ${res.updated} part${res.updated === 1 ? "" : "s"}`,
+        );
+      }
+      setOpen(false);
+      onDone();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() => setOpen(true)}
+        disabled={!sharedDocumentId}
+        title={
+          sharedDocumentId
+            ? "Re-pin all selected parts to a chosen Onshape version"
+            : "Select parts from a single Onshape document to bulk-update"
+        }
+      >
+        <GitMerge className="h-3.5 w-3.5" />
+        Update to version…
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Re-pin {selectedIds.size} parts to a version</DialogTitle>
+            <DialogDescription>
+              Pulls fresh metadata (mass, volume, bbox, thumbnail) from the
+              chosen version. Operations and notes stay put.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1 max-h-[50vh] overflow-y-auto">
+            {versions.isFetching && (
+              <div className="text-xs text-muted-foreground py-3 text-center">
+                Loading versions…
+              </div>
+            )}
+            {versions.error && (
+              <div className="text-xs text-destructive py-3 text-center">
+                {versions.error.message}
+              </div>
+            )}
+            {versions.data?.map((v) => (
+              <button
+                key={v.id}
+                disabled={bulkUpdate.isPending}
+                onClick={() =>
+                  bulkUpdate.mutate({
+                    ids: [...selectedIds],
+                    versionId: v.id,
+                    versionName: v.name,
+                  })
+                }
+                className="flex flex-col items-start gap-0.5 rounded-md border border-border px-3 py-2 text-left hover:border-primary/40 hover:bg-muted transition-colors"
+              >
+                <div className="font-medium text-sm">{v.name}</div>
+                {v.createdAt && (
+                  <div className="text-[10px] text-muted-foreground font-mono">
+                    {new Date(v.createdAt).toLocaleString()}
+                  </div>
+                )}
+              </button>
+            ))}
+            {versions.data?.length === 0 && (
+              <div className="text-sm text-muted-foreground py-3 text-center">
+                No versions in this document yet.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

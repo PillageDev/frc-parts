@@ -38,7 +38,6 @@ import {
 } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc/client";
 import { machineKindLabel } from "@/lib/labels";
-import { formatMinutes } from "@/lib/utils";
 import {
   MACHINE_KINDS,
   type Machine,
@@ -89,14 +88,13 @@ export default function MachinesPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {list.data?.map(
-          ({ machine: m, queued, active, done, estPendingMinutes }) => (
+          ({ machine: m, queued, active, done }) => (
             <MachineCard
               key={m.id}
               machine={m}
               queued={Number(queued)}
               active={Number(active)}
               done={Number(done)}
-              estPendingMinutes={Number(estPendingMinutes)}
               onEdit={() =>
                 setEditing({
                   id: m.id,
@@ -125,14 +123,12 @@ function MachineCard({
   queued,
   active,
   done,
-  estPendingMinutes,
   onEdit,
 }: {
   machine: Machine;
   queued: number;
   active: number;
   done: number;
-  estPendingMinutes: number;
   onEdit: () => void;
 }) {
   const utils = trpc.useUtils();
@@ -185,8 +181,8 @@ function MachineCard({
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
-            {estPendingMinutes > 0
-              ? `${formatMinutes(estPendingMinutes)} of work pending`
+            {queued + active > 0
+              ? `${queued + active} job${queued + active === 1 ? "" : "s"} pending`
               : "Idle"}
           </div>
         </CardContent>

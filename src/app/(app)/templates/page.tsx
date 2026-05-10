@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
-  Box,
-  Cpu,
   GripVertical,
   Lock,
+  Paperclip,
+  Pencil,
   Plus,
   Save,
   Sparkles,
@@ -48,7 +48,9 @@ import { toast } from "sonner";
 type StepDraft = {
   name: string;
   machineId: string | null;
-  estMinutes: number;
+  requireFile: boolean;
+  requireFileKind: string | null;
+  requireNote: boolean;
 };
 
 export default function TemplatesPage() {
@@ -133,7 +135,9 @@ function TemplateCard({
       sequence: number;
       name: string;
       machineId: string | null;
-      estMinutes: number;
+      requireFile: boolean;
+      requireFileKind: string | null;
+      requireNote: boolean;
     }>;
   };
   machines: Machine[];
@@ -144,7 +148,9 @@ function TemplateCard({
     template.steps.map((s) => ({
       name: s.name,
       machineId: s.machineId,
-      estMinutes: s.estMinutes,
+      requireFile: s.requireFile,
+      requireFileKind: s.requireFileKind,
+      requireNote: s.requireNote,
     })),
   );
   const [label, setLabel] = useState(template.label);
@@ -157,7 +163,9 @@ function TemplateCard({
       template.steps.map((s) => ({
         name: s.name,
         machineId: s.machineId,
-        estMinutes: s.estMinutes,
+        requireFile: s.requireFile,
+        requireFileKind: s.requireFileKind,
+        requireNote: s.requireNote,
       })),
     );
     setLabel(template.label);
@@ -203,7 +211,13 @@ function TemplateCard({
   function addStep() {
     setSteps((s) => [
       ...s,
-      { name: "", machineId: null, estMinutes: 10 },
+      {
+        name: "",
+        machineId: null,
+        requireFile: false,
+        requireFileKind: null,
+        requireNote: false,
+      },
     ]);
     setDirty(true);
   }
@@ -304,18 +318,7 @@ function TemplateCard({
                   ))}
                 </SelectContent>
               </Select>
-              <Input
-                type="number"
-                min={0}
-                value={s.estMinutes}
-                onChange={(e) =>
-                  patchStep(i, {
-                    estMinutes: Math.max(0, Number(e.target.value) || 0),
-                  })
-                }
-                className="h-8 w-[80px] text-center"
-              />
-              <span className="text-[10px] text-muted-foreground">min</span>
+              <RequirementToggles step={s} onChange={(p) => patchStep(i, p)} />
               <div className="flex flex-col">
                 <button
                   className="text-muted-foreground hover:text-foreground p-0.5 disabled:opacity-30"
@@ -369,6 +372,84 @@ function TemplateCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+const FILE_KINDS = ["gcode", "nc", "dxf", "svg", "stl", "step", "pdf"] as const;
+
+function RequirementToggles({
+  step,
+  onChange,
+}: {
+  step: StepDraft;
+  onChange: (p: Partial<StepDraft>) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        title={
+          step.requireFile
+            ? "File required to mark this step complete"
+            : "No file required"
+        }
+        onClick={() =>
+          onChange({
+            requireFile: !step.requireFile,
+            requireFileKind: !step.requireFile ? step.requireFileKind : null,
+          })
+        }
+        className={
+          "inline-flex items-center gap-1 rounded-md border px-1.5 h-7 text-[10px] uppercase tracking-wider transition-colors " +
+          (step.requireFile
+            ? "border-primary/60 bg-primary/15 text-foreground"
+            : "border-border bg-card text-muted-foreground hover:bg-muted")
+        }
+      >
+        <Paperclip className="h-3 w-3" />
+        File
+      </button>
+      {step.requireFile && (
+        <Select
+          value={step.requireFileKind ?? "__any__"}
+          onValueChange={(v) =>
+            onChange({
+              requireFileKind: v === "__any__" ? null : v,
+            })
+          }
+        >
+          <SelectTrigger className="h-7 w-[80px] text-[10px] uppercase tracking-wider">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__any__">Any</SelectItem>
+            {FILE_KINDS.map((k) => (
+              <SelectItem key={k} value={k}>
+                {k}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      <button
+        type="button"
+        title={
+          step.requireNote
+            ? "Operator note required"
+            : "No operator note required"
+        }
+        onClick={() => onChange({ requireNote: !step.requireNote })}
+        className={
+          "inline-flex items-center gap-1 rounded-md border px-1.5 h-7 text-[10px] uppercase tracking-wider transition-colors " +
+          (step.requireNote
+            ? "border-primary/60 bg-primary/15 text-foreground"
+            : "border-border bg-card text-muted-foreground hover:bg-muted")
+        }
+      >
+        <Pencil className="h-3 w-3" />
+        Note
+      </button>
+    </div>
   );
 }
 

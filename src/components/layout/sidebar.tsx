@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   Cpu,
-  Factory,
   GitBranch,
   Home,
   Kanban,
   Layers,
   PackageOpen,
+  PanelRight,
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -18,9 +19,11 @@ const NAV = [
   { href: "/", label: "Dashboard", icon: Home },
   { href: "/parts", label: "Parts", icon: PackageOpen },
   { href: "/kanban", label: "Kanban", icon: Kanban },
+  { href: "/timeline", label: "Timeline", icon: Activity },
   { href: "/machines", label: "Machines", icon: Cpu },
   { href: "/templates", label: "Route Templates", icon: Layers },
   { href: "/import", label: "Onshape Import", icon: GitBranch },
+  { href: "/onshape/sidebar", label: "In-Onshape Panel", icon: PanelRight },
 ];
 
 export function Sidebar() {
@@ -64,18 +67,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-      <div className="mt-auto p-3">
-        <div className="rounded-md border border-sidebar-border bg-sidebar-accent/40 p-3 text-xs leading-relaxed text-sidebar-foreground/80">
-          <div className="flex items-center gap-1.5 font-semibold text-sidebar-foreground">
-            <Factory className="h-3.5 w-3.5" />
-            Live shop floor
-          </div>
-          <p className="mt-1">
-            Parts pulled live from Onshape. Microversion changes alert the
-            manufacturer in real time.
-          </p>
-        </div>
-      </div>
     </aside>
   );
 }

@@ -13,7 +13,9 @@ import {
 const stepSchema = z.object({
   name: z.string().min(1).max(120),
   machineId: z.string().nullable(),
-  estMinutes: z.number().int().min(0).max(60 * 24 * 30),
+  requireFile: z.boolean().default(false),
+  requireFileKind: z.string().nullable().default(null),
+  requireNote: z.boolean().default(false),
 });
 
 export const templatesRouter = router({
@@ -101,7 +103,9 @@ export const templatesRouter = router({
           name: s.name,
           machineId: s.machineId,
           machineKind: kind,
-          estMinutes: s.estMinutes,
+          requireFile: s.requireFile,
+          requireFileKind: s.requireFileKind,
+          requireNote: s.requireNote,
         });
       }
       return created;
@@ -173,7 +177,9 @@ export const templatesRouter = router({
           name: s.name,
           machineId: s.machineId,
           machineKind: kind,
-          estMinutes: s.estMinutes,
+          requireFile: s.requireFile,
+          requireFileKind: s.requireFileKind,
+          requireNote: s.requireNote,
         });
       }
       return { ok: true };

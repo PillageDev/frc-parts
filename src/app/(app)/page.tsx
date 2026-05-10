@@ -4,7 +4,6 @@ import Link from "next/link";
 import {
   AlertTriangle,
   ArrowUpRight,
-  CheckCircle2,
   Clock,
   GitBranch,
   Hammer,
@@ -22,7 +21,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc/client";
-import { formatMinutes, timeAgo } from "@/lib/utils";
 import { machineKindLabel } from "@/lib/labels";
 
 export default function DashboardPage() {
@@ -37,7 +35,7 @@ export default function DashboardPage() {
   const onRobot = Number(counts?.onRobot ?? 0);
   const inProd = Number(counts?.inProduction ?? 0);
   const ready = Number(counts?.ready ?? 0);
-  const designChanged = Number(counts?.designChanged ?? 0);
+  const blocking = Number(counts?.blocking ?? 0);
 
   const completion = total > 0 ? Math.round((onRobot / total) * 100) : 0;
 
@@ -122,16 +120,16 @@ export default function DashboardPage() {
           hint={`${ready} more ready to start`}
         />
         <KpiCard
-          label="Design changed"
-          value={designChanged}
+          label="Blocking"
+          value={blocking}
           icon={<AlertTriangle className="h-4 w-4" />}
-          hint="Onshape microversion bumped"
-          tone={designChanged > 0 ? "danger" : "default"}
+          hint="High-priority parts holding the build"
+          tone={blocking > 0 ? "danger" : "default"}
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="lg:col-span-2">
+      <div className="grid grid-cols-1 gap-4">
+        <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
@@ -149,9 +147,8 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {machines.data?.map(({ machine: m, queued, active, estPendingMinutes }) => {
-              const total = Number(queued) + Number(active);
-              const minutes = Number(estPendingMinutes);
+            {machines.data?.map(({ machine: m, queued, active, done }) => {
+              const open = Number(queued) + Number(active);
               return (
                 <Link
                   key={m.id}
@@ -166,15 +163,17 @@ export default function DashboardPage() {
                       </div>
                     </div>
                     <Badge
-                      variant={total > 0 ? "default" : "muted"}
+                      variant={open > 0 ? "default" : "muted"}
                       className="font-mono"
                     >
-                      {total}
+                      {open}
                     </Badge>
                   </div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Clock className="h-3 w-3" />
-                    {minutes > 0 ? formatMinutes(minutes) : "Idle"}
+                    {open > 0
+                      ? `${open} waiting · ${Number(done)} done`
+                      : "Idle"}
                   </div>
                 </Link>
               );
@@ -182,48 +181,6 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Live design changes</CardTitle>
-            <CardDescription>
-              Microversion bumps detected on Onshape that may need
-              re-manufacturing.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {summary.data?.recentChanges.length === 0 && (
-              <div className="flex flex-col items-center text-center gap-2 py-6 text-muted-foreground text-sm">
-                <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                No changes since last sync.
-              </div>
-            )}
-            {summary.data?.recentChanges.map(({ rev, part: p }) => (
-              <Link
-                key={rev.id}
-                href={`/parts/${p.id}`}
-                className="flex items-start gap-3 rounded-md border border-border p-3 hover:border-primary/50 transition-colors"
-              >
-                <div className="flex h-8 w-8 items-center justify-center rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 shrink-0">
-                  <AlertTriangle className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">
-                    {p.name}{" "}
-                    <span className="text-muted-foreground font-normal">
-                      · {p.partNumber}
-                    </span>
-                  </div>
-                  <div className="text-xs text-muted-foreground line-clamp-2">
-                    {rev.changeSummary ?? "Microversion bumped"}
-                  </div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted-foreground/80 mt-1">
-                    {rev.versionLabel} · {timeAgo(rev.createdAt)}
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
       </div>
     </div>
   );

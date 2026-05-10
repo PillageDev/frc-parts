@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { AlertTriangle } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -99,9 +98,6 @@ export function KanbanBoard() {
                     >
                       {priorityLabel[p.priority]}
                     </span>
-                    {p.designChanged && (
-                      <AlertTriangle className="h-3 w-3 text-amber-600" />
-                    )}
                     {p.batchKey && (
                       <Badge
                         variant="accent"

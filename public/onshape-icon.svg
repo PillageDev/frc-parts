@@ -1,0 +1,31 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  width="64"
+  height="64"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="3.5"
+  stroke-linejoin="round"
+  stroke-linecap="round"
+  role="img"
+  aria-label="SpikeParts"
+>
+  <!-- Three isometric parts stacked vertically — reads as a parts inventory
+       at the small size Onshape renders the icon strip. -->
+
+  <!-- Top part -->
+  <path d="M16 24 L16 18 L24 12 L52 12 L52 18 L44 24 Z" />
+  <path d="M16 18 L44 18 L52 12" />
+  <path d="M44 18 L44 24" />
+
+  <!-- Middle part -->
+  <path d="M16 38 L16 32 L24 26 L52 26 L52 32 L44 38 Z" />
+  <path d="M16 32 L44 32 L52 26" />
+  <path d="M44 32 L44 38" />
+
+  <!-- Bottom part -->
+  <path d="M16 52 L16 46 L24 40 L52 40 L52 46 L44 52 Z" />
+  <path d="M16 46 L44 46 L52 40" />
+  <path d="M44 46 L44 52" />
+</svg>

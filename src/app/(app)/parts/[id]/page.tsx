@@ -15,7 +15,6 @@ import {
   ListChecks,
   Paperclip,
   PlayCircle,
-  RefreshCw,
   Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -125,19 +124,13 @@ export default function PartDetail({
   const update = trpc.parts.update.useMutation({
     onSuccess: () => utils.parts.byId.invalidate(),
   });
-  const sync = trpc.parts.syncRevision.useMutation({
+  const updateToVersion = trpc.parts.updateToVersion.useMutation({
     onSuccess: (res) => {
       utils.parts.byId.invalidate();
-      if (res.changed) {
-        toast.warning("Onshape design changed — review and re-route as needed.");
-      } else {
-        toast.success("Up to date with Onshape");
-      }
+      utils.parts.list.invalidate();
+      toast.success(`Re-pinned to "${res.versionName}"`);
     },
     onError: (e) => toast.error(e.message),
-  });
-  const ack = trpc.parts.acknowledgeRevision.useMutation({
-    onSuccess: () => utils.parts.byId.invalidate(),
   });
   const setBatchKey = trpc.parts.setBatchKey.useMutation({
     onSuccess: () => utils.parts.byId.invalidate(),
@@ -150,10 +143,6 @@ export default function PartDetail({
   }
   const p = part.data;
   const machineList = machines.data?.map((m) => m.machine) ?? [];
-  const totalEst = p.operations.reduce(
-    (acc, op) => acc + (op.estMinutes ?? 0),
-    0,
-  );
   const totalActual = p.operations.reduce(
     (acc, op) => acc + (op.actualMinutes ?? 0),
     0,
@@ -180,19 +169,21 @@ export default function PartDetail({
               </a>
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => sync.mutate({ id: p.id })}
-            disabled={sync.isPending}
-          >
-            <RefreshCw
-              className={
-                "h-3.5 w-3.5 " + (sync.isPending ? "animate-spin" : "")
+          {p.onshapeDocumentId && (
+            <UpdateVersionButton
+              partId={p.id}
+              documentId={p.onshapeDocumentId}
+              currentVersionId={p.onshapeVersionId}
+              onUpdate={(versionId, versionName) =>
+                updateToVersion.mutate({
+                  id: p.id,
+                  versionId,
+                  versionName,
+                })
               }
+              isPending={updateToVersion.isPending}
             />
-            Check for design changes
-          </Button>
+          )}
           {p.type === "custom" && p.operations.length > 0 && (
             <Button
               variant="default"
@@ -321,30 +312,6 @@ export default function PartDetail({
             </div>
           </div>
 
-          {p.designChanged && (
-            <Card className="border-amber-500/40 bg-amber-500/5">
-              <CardContent className="flex items-start gap-3 p-4">
-                <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5" />
-                <div className="flex-1">
-                  <div className="font-medium">
-                    Design changed in Onshape — may need re-manufacturing
-                  </div>
-                  <div className="text-sm text-muted-foreground mt-0.5">
-                    The microversion advanced upstream. Review the latest
-                    revision below and decide whether to re-cut or carry on.
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => ack.mutate({ id: p.id })}
-                >
-                  Mark reviewed
-                </Button>
-              </CardContent>
-            </Card>
-          )}
-
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Stat label="Material" value={p.material ?? "—"} />
             <Stat
@@ -364,10 +331,23 @@ export default function PartDetail({
               }
             />
             <Stat label="Quantity needed" value={`× ${p.quantity}`} />
-            <Stat label="Total est." value={formatMinutes(totalEst)} />
             <Stat
               label="Actual logged"
               value={totalActual > 0 ? formatMinutes(totalActual) : "—"}
+            />
+            <Stat
+              label="Onshape version"
+              value={
+                p.onshapeVersionName ? (
+                  <span className="font-mono text-xs">{p.onshapeVersionName}</span>
+                ) : p.onshapeVersionId ? (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {p.onshapeVersionId.slice(0, 8)}…
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )
+              }
             />
             <Stat
               label="Last synced"
@@ -576,6 +556,107 @@ export default function PartDetail({
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function UpdateVersionButton({
+  partId,
+  documentId,
+  currentVersionId,
+  onUpdate,
+  isPending,
+}: {
+  partId: string;
+  documentId: string;
+  currentVersionId: string | null;
+  onUpdate: (versionId: string, versionName: string) => void;
+  isPending: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const versions = trpc.parts.documentVersions.useQuery(
+    { documentId },
+    { enabled: open, retry: false },
+  );
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        disabled={isPending}
+      >
+        <GitBranch className="h-3.5 w-3.5" />
+        Update version
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Re-pin to a different Onshape version</DialogTitle>
+            <DialogDescription>
+              Pulls the part&apos;s mass / volume / bbox / thumbnail from the
+              chosen version and writes a revision row. Operations and notes
+              are preserved.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1 max-h-[50vh] overflow-y-auto">
+            {versions.isFetching && (
+              <div className="text-xs text-muted-foreground py-3 text-center">
+                Loading versions…
+              </div>
+            )}
+            {versions.error && (
+              <div className="text-xs text-destructive py-3 text-center">
+                {versions.error.message}
+              </div>
+            )}
+            {versions.data?.map((v) => {
+              const isCurrent = v.id === currentVersionId;
+              return (
+                <button
+                  key={v.id}
+                  disabled={isCurrent || isPending}
+                  onClick={() => {
+                    onUpdate(v.id, v.name);
+                    setOpen(false);
+                  }}
+                  className={
+                    "flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left transition-colors " +
+                    (isCurrent
+                      ? "border-primary/40 bg-primary/5"
+                      : "border-border hover:border-primary/40 hover:bg-muted")
+                  }
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    <span className="font-medium text-sm">{v.name}</span>
+                    {isCurrent && (
+                      <Badge variant="muted" className="text-[10px]">
+                        current
+                      </Badge>
+                    )}
+                  </div>
+                  {v.createdAt && (
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      {new Date(v.createdAt).toLocaleString()}
+                    </span>
+                  )}
+                  {v.description && (
+                    <span className="text-[11px] text-muted-foreground line-clamp-2">
+                      {v.description}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            {versions.data?.length === 0 && (
+              <div className="text-sm text-muted-foreground py-3 text-center">
+                No versions in this document yet.
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

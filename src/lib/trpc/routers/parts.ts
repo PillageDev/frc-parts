@@ -23,7 +23,7 @@ import {
   OnshapeAuthError,
   parseOnshapeUrl,
 } from "@/lib/onshape/client";
-import { detectStockType, estimateMinutes, loadTemplateSteps } from "@/lib/routing";
+import { detectStockType, loadTemplateSteps } from "@/lib/routing";
 import type { PartStatus, StockType } from "@/lib/db/schema";
 import type { db as DbInstance } from "@/lib/db/client";
 
@@ -129,7 +129,6 @@ const partFilterSchema = z
     assemblyId: z.string().optional(),
     type: z.enum(["custom", "cots"]).optional(),
     search: z.string().optional(),
-    designChanged: z.boolean().optional(),
     /**
      * undefined → no folder filter; null → only un-foldered parts;
      * string → only parts in that folder.
@@ -159,7 +158,6 @@ export const partsRouter = router({
       input?.priority ? eq(part.priority, input.priority) : undefined,
       input?.assemblyId ? eq(part.assemblyId, input.assemblyId) : undefined,
       input?.type ? eq(part.type, input.type) : undefined,
-      input?.designChanged ? eq(part.designChanged, true) : undefined,
       folderClause,
       input?.search
         ? or(
@@ -325,8 +323,10 @@ export const partsRouter = router({
             machineId: m?.id ?? null,
             sequence: i,
             name: s.name,
-            estMinutes: Math.round(s.estMinutes),
             autoAssigned: true,
+            requireFile: s.requireFile,
+            requireFileKind: s.requireFileKind,
+            requireNote: s.requireNote,
           });
         }
       }
@@ -410,8 +410,10 @@ export const partsRouter = router({
           machineId: m?.id ?? null,
           sequence: i,
           name: s.name,
-          estMinutes: Math.round(s.estMinutes),
           autoAssigned: true,
+          requireFile: s.requireFile,
+          requireFileKind: s.requireFileKind,
+          requireNote: s.requireNote,
         });
       }
       return { ok: true, steps: steps.length };
@@ -441,33 +443,130 @@ export const partsRouter = router({
     connected: hasOnshapeCredentials(),
   })),
 
+  /**
+   * Parts already imported from a specific Onshape document. Powers the
+   * Browse tab inside the in-Onshape sidebar so the user can see what's
+   * already in the manager for the doc they're currently looking at.
+   */
+  byDocument: publicProcedure
+    .input(z.object({ documentId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      return ctx.db
+        .select()
+        .from(part)
+        .where(eq(part.onshapeDocumentId, input.documentId))
+        .orderBy(desc(part.updatedAt));
+    }),
+
+  /**
+   * Checks which Onshape parts in a given (document, element) tuple are
+   * already imported into the manager. Returns one row per existing part
+   * so the importer UI can flag duplicates and warn before re-importing.
+   * Re-importing is destructive-ish — it triggers `onConflictDoUpdate` on
+   * `partNumber` and bumps `lastSyncedAt` — so we want a confirmation.
+   */
+  checkDuplicates: publicProcedure
+    .input(
+      z.object({
+        documentId: z.string().min(1),
+        elementId: z.string().min(1),
+        partIds: z.array(z.string()).default([]),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      if (input.partIds.length === 0) return [];
+      return ctx.db
+        .select({
+          id: part.id,
+          name: part.name,
+          partNumber: part.partNumber,
+          onshapePartId: part.onshapePartId,
+          onshapeVersionName: part.onshapeVersionName,
+          status: part.status,
+          updatedAt: part.updatedAt,
+        })
+        .from(part)
+        .where(
+          and(
+            eq(part.onshapeDocumentId, input.documentId),
+            eq(part.onshapeElementId, input.elementId),
+            inArray(part.onshapePartId, input.partIds),
+          ),
+        );
+    }),
+
+  /**
+   * Lightweight document metadata (name, default workspace) for the
+   * sidebar header. Falls back gracefully when Onshape can't be reached.
+   */
+  onshapeDocumentInfo: publicProcedure
+    .input(z.object({ documentId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      try {
+        const doc = await onshape.getDocument(input.documentId);
+        return { id: doc.id, name: doc.name };
+      } catch (err) {
+        if (err instanceof OnshapeAuthError) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: err.message });
+        }
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: (err as Error).message,
+        });
+      }
+    }),
+
+  /**
+   * Resolve an Onshape document URL into a versions list. We refuse to import
+   * from live workspaces — every part must come from a named Version
+   * (Onshape's immutable release primitive).
+   */
   resolveOnshapeUrl: publicProcedure
     .input(z.object({ url: z.string() }))
     .query(async ({ input }) => {
       try {
         const ref = parseOnshapeUrl(input.url);
-        if (!ref.workspaceId && !ref.versionId) {
-          // We need a workspace to fetch — Onshape returns the default one
-          const doc = await onshape.getDocument(ref.documentId);
-          ref.workspaceId = doc.defaultWorkspace.id;
-        }
-        const allElements = await onshape.listElements({
-          documentId: ref.documentId,
-          workspaceId: ref.workspaceId,
-          versionId: ref.versionId,
-        });
-        // Hide BOM tabs / drawings / blobs — only show elements that we can
-        // actually import parts from.
-        const elements = allElements.filter((e) =>
-          IMPORTABLE_ELEMENT_TYPES.has(e.elementType),
+        const versions = await onshape.listVersions(ref.documentId);
+        // Onshape always includes a synthetic "Start" version at index 0.
+        // Hide it — there's nothing useful to import there.
+        const usable = versions.filter(
+          (v) => v.name !== "Start" && v.name !== "Initial",
         );
-        return { ref, elements };
+        return { ref, versions: usable };
       } catch (err) {
         if (err instanceof OnshapeAuthError) {
           throw new TRPCError({
             code: "UNAUTHORIZED",
             message: err.message,
           });
+        }
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: (err as Error).message,
+        });
+      }
+    }),
+
+  /**
+   * List the importable Part Studios in a specific document version.
+   */
+  listVersionElements: publicProcedure
+    .input(
+      z.object({
+        documentId: z.string(),
+        versionId: z.string(),
+      }),
+    )
+    .query(async ({ input }) => {
+      try {
+        const all = await onshape.listElements({
+          documentId: input.documentId,
+          versionId: input.versionId,
+        });
+        return all.filter((e) => IMPORTABLE_ELEMENT_TYPES.has(e.elementType));
+      } catch (err) {
+        if (err instanceof OnshapeAuthError) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: err.message });
         }
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -585,6 +684,7 @@ export const partsRouter = router({
         quantity: z.number().int().min(1).default(1),
         type: z.enum(["custom", "cots"]).default("custom"),
         stockType: z.string().default("auto"),
+        versionName: z.string().optional(),
         drawing: drawingSchema,
         vendor: z.string().optional(),
         vendorPartNumber: z.string().optional(),
@@ -592,6 +692,15 @@ export const partsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      // Hard-gate: workspace imports are blocked. Every part has to come from
+      // a named Onshape Version so it's pinned/immutable.
+      if (!input.versionId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Pick a released Version of the document — workspace imports aren't allowed.",
+        });
+      }
       try {
         const snap = await fetchPartSnapshot(input);
         const resolvedStockType = resolveStockType(input.stockType, {
@@ -620,6 +729,7 @@ export const partsRouter = router({
             onshapePartId: snap.partId,
             onshapeElementId: snap.elementId,
             onshapeVersionId: snap.versionId ?? null,
+            onshapeVersionName: input.versionName ?? null,
             onshapeMicroversionId: snap.microversionId,
             onshapeUrl: snap.url,
             thumbnailUrl: snap.thumbnailUrl,
@@ -677,8 +787,10 @@ export const partsRouter = router({
               machineId: m?.id ?? null,
               sequence: i,
               name: s.name,
-              estMinutes: Math.round(s.estMinutes),
               autoAssigned: true,
+              requireFile: s.requireFile,
+              requireFileKind: s.requireFileKind,
+              requireNote: s.requireNote,
             });
           }
         }
@@ -888,8 +1000,10 @@ export const partsRouter = router({
                   machineId: m?.id ?? null,
                   sequence: i,
                   name: s.name,
-                  estMinutes: Math.round(s.estMinutes),
                   autoAssigned: true,
+                  requireFile: s.requireFile,
+                  requireFileKind: s.requireFileKind,
+                  requireNote: s.requireNote,
                 });
               }
             }
@@ -905,8 +1019,88 @@ export const partsRouter = router({
       }
     }),
 
-  syncRevision: publicProcedure
-    .input(z.object({ id: z.string() }))
+  /**
+   * Look up the human-readable version name for any parts that have an
+   * onshape_version_id set but a null onshape_version_name (parts imported
+   * before we started saving the name). Groups by document so we hit
+   * Onshape once per doc rather than once per part.
+   */
+  backfillVersionNames: publicProcedure.mutation(async ({ ctx }) => {
+    const candidates = await ctx.db
+      .select()
+      .from(part)
+      .where(
+        sql`${part.onshapeVersionId} IS NOT NULL AND ${part.onshapeVersionName} IS NULL AND ${part.onshapeDocumentId} IS NOT NULL`,
+      );
+    if (candidates.length === 0) {
+      return { updated: 0, scanned: 0 };
+    }
+
+    // Group by documentId so we list each document's versions only once.
+    const byDoc = new Map<string, typeof candidates>();
+    for (const p of candidates) {
+      const did = p.onshapeDocumentId!;
+      const arr = byDoc.get(did) ?? [];
+      arr.push(p);
+      byDoc.set(did, arr);
+    }
+
+    let updated = 0;
+    for (const [docId, parts] of byDoc.entries()) {
+      let versions: Awaited<ReturnType<typeof onshape.listVersions>>;
+      try {
+        versions = await onshape.listVersions(docId);
+      } catch {
+        continue;
+      }
+      const byId = new Map(versions.map((v) => [v.id, v.name]));
+      for (const p of parts) {
+        const name = byId.get(p.onshapeVersionId!);
+        if (name) {
+          await ctx.db
+            .update(part)
+            .set({ onshapeVersionName: name })
+            .where(eq(part.id, p.id));
+          updated++;
+        }
+      }
+    }
+    return { updated, scanned: candidates.length };
+  }),
+
+  /** List versions of an Onshape document so the UI can pick one. */
+  documentVersions: publicProcedure
+    .input(z.object({ documentId: z.string() }))
+    .query(async ({ input }) => {
+      try {
+        const versions = await onshape.listVersions(input.documentId);
+        return versions.filter(
+          (v) => v.name !== "Start" && v.name !== "Initial",
+        );
+      } catch (err) {
+        if (err instanceof OnshapeAuthError) {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: err.message });
+        }
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: (err as Error).message,
+        });
+      }
+    }),
+
+  /**
+   * Re-pin one part to a different Onshape Version. Re-fetches the snapshot
+   * (mass / volume / bbox / thumbnail) from the new version, writes a
+   * partRevision row so history is preserved, and updates the live part.
+   */
+  updateToVersion: publicProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        versionId: z.string(),
+        versionName: z.string(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
       const row = await ctx.db.query.part.findFirst({
         where: eq(part.id, input.id),
@@ -917,60 +1111,51 @@ export const partsRouter = router({
         !row.onshapeDocumentId ||
         !row.onshapeElementId
       ) {
-        throw new TRPCError({ code: "BAD_REQUEST" });
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Part isn't linked to Onshape.",
+        });
       }
       try {
         const snap = await fetchPartSnapshot({
           documentId: row.onshapeDocumentId,
-          workspaceId: row.onshapeUrl?.includes("/w/")
-            ? extractIdAfter(row.onshapeUrl, "/w/")
-            : undefined,
-          versionId: row.onshapeVersionId ?? undefined,
+          versionId: input.versionId,
           elementId: row.onshapeElementId,
           partId: row.onshapePartId,
         });
-
-        const changed =
-          snap.microversionId &&
-          snap.microversionId !== row.onshapeMicroversionId;
-
-        if (changed) {
-          await ctx.db
-            .update(part)
-            .set({
-              designChanged: true,
-              onshapeMicroversionId: snap.microversionId,
-              massGrams: snap.massGrams ?? row.massGrams,
-              volumeMm3: snap.volumeMm3 ?? row.volumeMm3,
-              lastSyncedAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(part.id, row.id));
-
-          const existing = await ctx.db
-            .select()
-            .from(partRevision)
-            .where(eq(partRevision.partId, row.id));
-          await ctx.db.insert(partRevision).values({
-            partId: row.id,
-            onshapeVersionId: snap.versionId ?? null,
+        await ctx.db
+          .update(part)
+          .set({
+            onshapeVersionId: input.versionId,
+            onshapeVersionName: input.versionName,
             onshapeMicroversionId: snap.microversionId,
-            versionLabel: `v${existing.length + 1}`,
-            massGrams: snap.massGrams ?? undefined,
-            volumeMm3: snap.volumeMm3 ?? undefined,
-            changeSummary: "Microversion bumped in Onshape",
-            flagged: true,
-          });
-        } else {
-          await ctx.db
-            .update(part)
-            .set({ lastSyncedAt: new Date() })
-            .where(eq(part.id, row.id));
-        }
-        return {
-          changed: Boolean(changed),
-          microversionId: snap.microversionId,
-        };
+            onshapeUrl: snap.url,
+            thumbnailUrl: snap.thumbnailUrl,
+            massGrams: snap.massGrams ?? row.massGrams,
+            volumeMm3: snap.volumeMm3 ?? row.volumeMm3,
+            bboxXMm: snap.bbox?.x ?? row.bboxXMm,
+            bboxYMm: snap.bbox?.y ?? row.bboxYMm,
+            bboxZMm: snap.bbox?.z ?? row.bboxZMm,
+            lastSyncedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(part.id, row.id));
+
+        const existing = await ctx.db
+          .select()
+          .from(partRevision)
+          .where(eq(partRevision.partId, row.id));
+        await ctx.db.insert(partRevision).values({
+          partId: row.id,
+          onshapeVersionId: input.versionId,
+          onshapeMicroversionId: snap.microversionId,
+          versionLabel: `v${existing.length + 1}`,
+          massGrams: snap.massGrams ?? undefined,
+          volumeMm3: snap.volumeMm3 ?? undefined,
+          changeSummary: `Re-pinned to Onshape version "${input.versionName}"`,
+          flagged: false,
+        });
+        return { ok: true, versionName: input.versionName };
       } catch (err) {
         if (err instanceof OnshapeAuthError) {
           throw new TRPCError({ code: "UNAUTHORIZED", message: err.message });
@@ -979,99 +1164,78 @@ export const partsRouter = router({
       }
     }),
 
-  acknowledgeRevision: publicProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(async ({ ctx, input }) => {
-      await ctx.db
-        .update(part)
-        .set({ designChanged: false, updatedAt: new Date() })
-        .where(eq(part.id, input.id));
-      return { ok: true };
-    }),
-
   /**
-   * Re-sync every Onshape-linked part (or a specific subset). Returns a
-   * summary so the UI can toast aggregate results.
+   * Re-pin many parts to a different Onshape Version. All parts in `ids`
+   * must share the same `onshapeDocumentId` (the version is per-document).
    */
-  bulkSyncRevisions: publicProcedure
+  bulkUpdateToVersion: publicProcedure
     .input(
-      z
-        .object({
-          ids: z.array(z.string()).optional(),
-        })
-        .optional(),
+      z.object({
+        ids: z.array(z.string()).min(1),
+        versionId: z.string(),
+        versionName: z.string(),
+      }),
     )
     .mutation(async ({ ctx, input }) => {
-      const baseRows = input?.ids?.length
-        ? await ctx.db
-            .select()
-            .from(part)
-            .where(inArray(part.id, input.ids))
-        : await ctx.db.select().from(part);
-      // Only Onshape-linked parts can be sync'd.
-      const candidates = baseRows.filter(
-        (p) =>
-          p.onshapePartId && p.onshapeDocumentId && p.onshapeElementId,
-      );
-
-      let changed = 0;
-      let unchanged = 0;
-      const failed: Array<{ id: string; partNumber: string; error: string }> = [];
-      const changedParts: Array<{ id: string; name: string; partNumber: string }> = [];
-
-      for (const row of candidates) {
+      const rows = await ctx.db
+        .select()
+        .from(part)
+        .where(inArray(part.id, input.ids));
+      let updated = 0;
+      const failed: Array<{ id: string; partNumber: string; error: string }> =
+        [];
+      for (const row of rows) {
+        if (
+          !row.onshapePartId ||
+          !row.onshapeDocumentId ||
+          !row.onshapeElementId
+        ) {
+          failed.push({
+            id: row.id,
+            partNumber: row.partNumber,
+            error: "Not linked to Onshape",
+          });
+          continue;
+        }
         try {
           const snap = await fetchPartSnapshot({
-            documentId: row.onshapeDocumentId!,
-            workspaceId: row.onshapeUrl?.includes("/w/")
-              ? extractIdAfter(row.onshapeUrl, "/w/")
-              : undefined,
-            versionId: row.onshapeVersionId ?? undefined,
-            elementId: row.onshapeElementId!,
-            partId: row.onshapePartId!,
+            documentId: row.onshapeDocumentId,
+            versionId: input.versionId,
+            elementId: row.onshapeElementId,
+            partId: row.onshapePartId,
           });
-          const isChanged =
-            !!snap.microversionId &&
-            snap.microversionId !== row.onshapeMicroversionId;
-          if (isChanged) {
-            await ctx.db
-              .update(part)
-              .set({
-                designChanged: true,
-                onshapeMicroversionId: snap.microversionId,
-                massGrams: snap.massGrams ?? row.massGrams,
-                volumeMm3: snap.volumeMm3 ?? row.volumeMm3,
-                lastSyncedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(part.id, row.id));
-            const existing = await ctx.db
-              .select()
-              .from(partRevision)
-              .where(eq(partRevision.partId, row.id));
-            await ctx.db.insert(partRevision).values({
-              partId: row.id,
-              onshapeVersionId: snap.versionId ?? null,
+          await ctx.db
+            .update(part)
+            .set({
+              onshapeVersionId: input.versionId,
+              onshapeVersionName: input.versionName,
               onshapeMicroversionId: snap.microversionId,
-              versionLabel: `v${existing.length + 1}`,
-              massGrams: snap.massGrams ?? undefined,
-              volumeMm3: snap.volumeMm3 ?? undefined,
-              changeSummary: "Microversion bumped in Onshape (bulk sync)",
-              flagged: true,
-            });
-            changed++;
-            changedParts.push({
-              id: row.id,
-              name: row.name,
-              partNumber: row.partNumber,
-            });
-          } else {
-            await ctx.db
-              .update(part)
-              .set({ lastSyncedAt: new Date() })
-              .where(eq(part.id, row.id));
-            unchanged++;
-          }
+              onshapeUrl: snap.url,
+              thumbnailUrl: snap.thumbnailUrl,
+              massGrams: snap.massGrams ?? row.massGrams,
+              volumeMm3: snap.volumeMm3 ?? row.volumeMm3,
+              bboxXMm: snap.bbox?.x ?? row.bboxXMm,
+              bboxYMm: snap.bbox?.y ?? row.bboxYMm,
+              bboxZMm: snap.bbox?.z ?? row.bboxZMm,
+              lastSyncedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(part.id, row.id));
+          const existing = await ctx.db
+            .select()
+            .from(partRevision)
+            .where(eq(partRevision.partId, row.id));
+          await ctx.db.insert(partRevision).values({
+            partId: row.id,
+            onshapeVersionId: input.versionId,
+            onshapeMicroversionId: snap.microversionId,
+            versionLabel: `v${existing.length + 1}`,
+            massGrams: snap.massGrams ?? undefined,
+            volumeMm3: snap.volumeMm3 ?? undefined,
+            changeSummary: `Bulk re-pinned to Onshape version "${input.versionName}"`,
+            flagged: false,
+          });
+          updated++;
         } catch (err) {
           if (err instanceof OnshapeAuthError) {
             throw new TRPCError({
@@ -1086,15 +1250,7 @@ export const partsRouter = router({
           });
         }
       }
-      return {
-        scanned: candidates.length,
-        changed,
-        unchanged,
-        failed: failed.length,
-        skipped: baseRows.length - candidates.length,
-        changedParts,
-        errors: failed,
-      };
+      return { updated, failed: failed.length, errors: failed };
     }),
 
   // ── Operations / steps ───────────────────────────────────────────────────
@@ -1104,7 +1260,6 @@ export const partsRouter = router({
         partId: z.string(),
         name: z.string().min(1),
         machineId: z.string().nullable().optional(),
-        estMinutes: z.number().int().min(0).optional(),
         notes: z.string().optional(),
       }),
     )
@@ -1121,7 +1276,6 @@ export const partsRouter = router({
         machineId: input.machineId ?? null,
         sequence: nextSeq,
         name: input.name,
-        estMinutes: input.estMinutes,
         notes: input.notes,
         autoAssigned: false,
       });
@@ -1142,6 +1296,42 @@ export const partsRouter = router({
   setStepStatus: publicProcedure
     .input(z.object({ stepId: z.string(), status: z.enum(STEP_STATUSES) }))
     .mutation(async ({ ctx, input }) => {
+      // Validate template-level requirements before allowing the step to be
+      // marked complete. Other transitions are unrestricted.
+      if (input.status === "complete") {
+        const op = await ctx.db.query.operation.findFirst({
+          where: eq(operation.id, input.stepId),
+          with: {
+            part: { with: { attachments: true } },
+            attachments: true,
+          },
+        });
+        if (!op) throw new TRPCError({ code: "NOT_FOUND" });
+        if (op.requireFile) {
+          const allFiles = [
+            ...(op.attachments ?? []),
+            ...(op.part?.attachments ?? []),
+          ];
+          const ok = op.requireFileKind
+            ? allFiles.some((a) => a.fileKind === op.requireFileKind)
+            : allFiles.length > 0;
+          if (!ok) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: op.requireFileKind
+                ? `This step needs a .${op.requireFileKind} file attached before it can be marked complete.`
+                : "Attach at least one file to this part before marking the step complete.",
+            });
+          }
+        }
+        if (op.requireNote && (!op.notes || op.notes.trim().length === 0)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "Add an operator note to this step before marking complete.",
+          });
+        }
+      }
+
       const patch: Record<string, unknown> = { status: input.status };
       if (input.status === "in_progress") patch.startedAt = new Date();
       if (input.status === "complete") patch.completedAt = new Date();
@@ -1150,10 +1340,10 @@ export const partsRouter = router({
         .set(patch)
         .where(eq(operation.id, input.stepId));
       // Roll the part's overall status forward (or back) to match.
-      const op = await ctx.db.query.operation.findFirst({
+      const op2 = await ctx.db.query.operation.findFirst({
         where: eq(operation.id, input.stepId),
       });
-      if (op) await recomputePartStatus(ctx.db, op.partId);
+      if (op2) await recomputePartStatus(ctx.db, op2.partId);
       return { ok: true };
     }),
 
@@ -1218,16 +1408,6 @@ export const partsRouter = router({
       return { ok: true };
     }),
 
-  setStepEstimate: publicProcedure
-    .input(z.object({ stepId: z.string(), estMinutes: z.number().int().min(0) }))
-    .mutation(async ({ ctx, input }) => {
-      await ctx.db
-        .update(operation)
-        .set({ estMinutes: input.estMinutes })
-        .where(eq(operation.id, input.stepId));
-      return { ok: true };
-    }),
-
   removeStep: publicProcedure
     .input(z.object({ stepId: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -1237,31 +1417,6 @@ export const partsRouter = router({
       await ctx.db.delete(operation).where(eq(operation.id, input.stepId));
       if (op) await recomputePartStatus(ctx.db, op.partId);
       return { ok: true };
-    }),
-
-  estimateForStep: publicProcedure
-    .input(z.object({ stepId: z.string() }))
-    .mutation(async ({ ctx, input }) => {
-      const op = await ctx.db.query.operation.findFirst({
-        where: eq(operation.id, input.stepId),
-        with: { part: true, machine: true },
-      });
-      if (!op || !op.machine || !op.part)
-        throw new TRPCError({ code: "BAD_REQUEST" });
-      const mins = estimateMinutes(
-        op.machine.kind,
-        {
-          x: op.part.bboxXMm ?? 100,
-          y: op.part.bboxYMm ?? 100,
-          z: op.part.bboxZMm ?? 10,
-        },
-        op.part.material,
-      );
-      await ctx.db
-        .update(operation)
-        .set({ estMinutes: mins })
-        .where(eq(operation.id, input.stepId));
-      return { estMinutes: mins };
     }),
 
   // ── Attachments ──────────────────────────────────────────────────────────
@@ -1317,6 +1472,66 @@ export const partsRouter = router({
     }),
 
   /**
+   * Timeline data — every part with its operation timestamps so the UI can
+   * render a Gantt-style bar per part. Returns parts that have at least one
+   * non-zero timestamp OR are still open (not done/on_robot).
+   */
+  timeline: publicProcedure.query(async ({ ctx }) => {
+    const rows = await ctx.db.query.part.findMany({
+      with: {
+        operations: {
+          with: { machine: true },
+          orderBy: asc(operation.sequence),
+        },
+      },
+      orderBy: desc(part.createdAt),
+    });
+    return rows
+      .map((p) => {
+        const ops = p.operations.map((o) => ({
+          id: o.id,
+          name: o.name,
+          status: o.status,
+          machineName: o.machine?.name ?? null,
+          startedAt: o.startedAt,
+          completedAt: o.completedAt,
+          actualMinutes: o.actualMinutes,
+        }));
+        const startedTimes = ops
+          .map((o) => o.startedAt)
+          .filter((d): d is Date => d != null)
+          .map((d) => d.getTime());
+        const completedTimes = ops
+          .map((o) => o.completedAt)
+          .filter((d): d is Date => d != null)
+          .map((d) => d.getTime());
+        const firstStartedAt = startedTimes.length
+          ? new Date(Math.min(...startedTimes))
+          : null;
+        const lastCompletedAt = completedTimes.length
+          ? new Date(Math.max(...completedTimes))
+          : null;
+        return {
+          id: p.id,
+          name: p.name,
+          partNumber: p.partNumber,
+          status: p.status,
+          priority: p.priority,
+          batchKey: p.batchKey,
+          createdAt: p.createdAt,
+          firstStartedAt,
+          lastCompletedAt,
+          operations: ops,
+        };
+      })
+      .filter(
+        (p) =>
+          p.firstStartedAt !== null ||
+          (p.status !== "done" && p.status !== "on_robot"),
+      );
+  }),
+
+  /**
    * List batches: every distinct batchKey on a part with summary counts.
    */
   listBatches: publicProcedure.query(async ({ ctx }) => {
@@ -1339,6 +1554,43 @@ export const partsRouter = router({
       done: Number(r.done),
     }));
   }),
+
+  /**
+   * Start manufacturing on a list of parts (e.g. multi-select group on the
+   * parts page). Queues each part's first non-complete operation.
+   */
+  bulkStartManufacturing: publicProcedure
+    .input(z.object({ ids: z.array(z.string()).min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const parts = await ctx.db
+        .select()
+        .from(part)
+        .where(inArray(part.id, input.ids));
+      let queued = 0;
+      let alreadyDone = 0;
+      for (const p of parts) {
+        if (p.type === "cots") continue;
+        const ops = await ctx.db
+          .select()
+          .from(operation)
+          .where(eq(operation.partId, p.id))
+          .orderBy(asc(operation.sequence));
+        const firstPending = ops.find((o) => o.status !== "complete");
+        if (!firstPending) {
+          alreadyDone++;
+          continue;
+        }
+        if (firstPending.status === "not_started") {
+          await ctx.db
+            .update(operation)
+            .set({ status: "in_queue" })
+            .where(eq(operation.id, firstPending.id));
+        }
+        await recomputePartStatus(ctx.db, p.id);
+        queued++;
+      }
+      return { queued, alreadyDone, total: parts.length };
+    }),
 
   /**
    * Start manufacturing on every part in the batch — queues each part's

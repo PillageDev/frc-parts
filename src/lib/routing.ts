@@ -24,7 +24,9 @@ export type RoutedStep = {
   kind: MachineKind;
   /** Preferred machine from the template, if any. */
   machineId: string | null;
-  estMinutes: number;
+  requireFile: boolean;
+  requireFileKind: string | null;
+  requireNote: boolean;
 };
 
 const matchesAny = (s: string | null | undefined, ...needles: string[]) => {
@@ -102,44 +104,9 @@ export async function loadTemplateSteps(
     name: s.name,
     kind: s.machineKind,
     machineId: s.machineId,
-    estMinutes: s.estMinutes,
+    requireFile: s.requireFile,
+    requireFileKind: s.requireFileKind,
+    requireNote: s.requireNote,
   }));
 }
 
-/**
- * Estimates machining time independently of the routing using a simple
- * material-removal-rate heuristic. Returns minutes.
- */
-export function estimateMinutes(
-  kind: MachineKind,
-  bbox: { x: number; y: number; z: number },
-  material: string | null | undefined,
-): number {
-  const vol = bbox.x * bbox.y * bbox.z; // mm^3
-  const isHard = matchesAny(material, "steel", "stainless", "7075");
-  const factor = isHard ? 1.6 : 1;
-  switch (kind) {
-    case "cnc_router":
-      return Math.round((25 + vol / 18000) * factor);
-    case "cnc_mill":
-      return Math.round((22 + vol / 12000) * factor);
-    case "manual_mill":
-      return Math.round((20 + vol / 14000) * factor);
-    case "lathe":
-      return Math.round((18 + Math.max(bbox.x, bbox.y, bbox.z) / 30) * factor);
-    case "laser_cutter":
-      return Math.round(6 + Math.max(bbox.x, bbox.y) / 120);
-    case "3d_printer":
-      return Math.round(45 + vol / 8000);
-    case "bandsaw":
-      return Math.round(Math.max(8, Math.max(bbox.x, bbox.y, bbox.z) / 80));
-    case "chopsaw":
-      return Math.round(Math.max(5, Math.max(bbox.x, bbox.y, bbox.z) / 100));
-    case "bench":
-      return 8;
-    case "waterjet":
-      return Math.round((12 + Math.max(bbox.x, bbox.y) / 80) * factor);
-    case "outsource":
-      return 60 * 24 * 3;
-  }
-}

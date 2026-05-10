@@ -79,7 +79,7 @@ exec(`CREATE INDEX IF NOT EXISTS template_step_sequence_idx ON route_template_st
 // Add machine_id to route_template_step (preferred machine override)
 const stepCols = db
   .prepare("PRAGMA table_info('route_template_step')")
-  .all() as Array<{ name: string }>;
+  .all() as Array<{ name: string; notnull: number }>;
 if (!stepCols.some((c) => c.name === "machine_id")) {
   exec(
     `ALTER TABLE route_template_step ADD COLUMN machine_id TEXT REFERENCES machine(id) ON DELETE SET NULL`,
@@ -99,6 +99,57 @@ if (!stepCols.some((c) => c.name === "machine_id")) {
 exec(
   `CREATE INDEX IF NOT EXISTS template_step_machine_idx ON route_template_step(machine_id)`,
 );
+
+// Add per-step requirements (templates and operations).
+for (const col of [
+  { name: "require_file", sql: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "require_file_kind", sql: "TEXT" },
+  { name: "require_note", sql: "INTEGER NOT NULL DEFAULT 0" },
+]) {
+  if (!stepCols.some((c) => c.name === col.name)) {
+    exec(`ALTER TABLE route_template_step ADD COLUMN ${col.name} ${col.sql}`);
+  }
+}
+const opCols = db
+  .prepare("PRAGMA table_info('operation')")
+  .all() as Array<{ name: string }>;
+for (const col of [
+  { name: "require_file", sql: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "require_file_kind", sql: "TEXT" },
+  { name: "require_note", sql: "INTEGER NOT NULL DEFAULT 0" },
+]) {
+  if (!opCols.some((c) => c.name === col.name)) {
+    exec(`ALTER TABLE operation ADD COLUMN ${col.name} ${col.sql}`);
+  }
+}
+
+// Drop the now-unused est_minutes columns. SQLite ≥ 3.35 supports DROP
+// COLUMN, and the better-sqlite3 build we're using ships a newer SQLite.
+const stepColsAfter = db
+  .prepare("PRAGMA table_info('route_template_step')")
+  .all() as Array<{ name: string }>;
+if (stepColsAfter.some((c) => c.name === "est_minutes")) {
+  exec(`ALTER TABLE route_template_step DROP COLUMN est_minutes`);
+}
+const opColsAfter = db
+  .prepare("PRAGMA table_info('operation')")
+  .all() as Array<{ name: string }>;
+if (opColsAfter.some((c) => c.name === "est_minutes")) {
+  exec(`ALTER TABLE operation DROP COLUMN est_minutes`);
+}
+
+// Add onshape_version_name to part for human-readable version display.
+const partCols2 = db
+  .prepare("PRAGMA table_info('part')")
+  .all() as Array<{ name: string }>;
+if (!partCols2.some((c) => c.name === "onshape_version_name")) {
+  exec(`ALTER TABLE part ADD COLUMN onshape_version_name TEXT`);
+}
+
+// Drop the now-unused design_changed column on part.
+if (partCols2.some((c) => c.name === "design_changed")) {
+  exec(`ALTER TABLE part DROP COLUMN design_changed`);
+}
 
 console.log("Schema additions applied.");
 db.close();

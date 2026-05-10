@@ -24,13 +24,11 @@ export function AddStepForm({
 }) {
   const [name, setName] = useState("");
   const [machineId, setMachineId] = useState<string>("none");
-  const [estMinutes, setEstMinutes] = useState("");
   const utils = trpc.useUtils();
   const addStep = trpc.parts.addStep.useMutation({
     onSuccess: () => {
       utils.parts.byId.invalidate();
       setName("");
-      setEstMinutes("");
       toast.success("Step added");
     },
   });
@@ -45,7 +43,6 @@ export function AddStepForm({
           partId,
           name: name.trim(),
           machineId: machineId === "none" ? null : machineId,
-          estMinutes: estMinutes ? Number(estMinutes) : undefined,
         });
       }}
     >
@@ -68,14 +65,6 @@ export function AddStepForm({
           ))}
         </SelectContent>
       </Select>
-      <Input
-        placeholder="Est min"
-        type="number"
-        min={0}
-        value={estMinutes}
-        onChange={(e) => setEstMinutes(e.target.value)}
-        className="w-[110px]"
-      />
       <Button type="submit">
         <Plus className="h-4 w-4" />
         Add step

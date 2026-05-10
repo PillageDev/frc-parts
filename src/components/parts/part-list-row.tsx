@@ -3,19 +3,18 @@
 import Link from "next/link";
 import { useState } from "react";
 import {
-  AlertTriangle,
   ArrowRight,
   Check,
   ExternalLink,
   Flag,
   FolderClosed,
   FolderInput,
+  GitBranch,
   Layers,
   ListChecks,
   Package,
   PlayCircle,
   Rocket,
-  RefreshCw,
   Trash2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +40,7 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { PartThumbnail } from "@/components/parts/part-thumbnail";
 import {
   priorityClass,
@@ -66,9 +66,14 @@ import { toast } from "sonner";
 export function PartListRow({
   part,
   folders = [],
+  selected,
+  onSelectedChange,
 }: {
   part: Part;
   folders?: Folder[];
+  /** When provided, renders a selection checkbox and lets the parent track multi-select. */
+  selected?: boolean;
+  onSelectedChange?: (next: boolean) => void;
 }) {
   const [confirm, setConfirm] = useState(false);
   const utils = trpc.useUtils();
@@ -101,19 +106,6 @@ export function PartListRow({
     onSuccess: (res) => {
       invalidateAll();
       toast.success(`Stock type → ${stockTypeLabel[res.stockType]}, re-routed`);
-    },
-    onError: (e) => toast.error(e.message),
-  });
-  const sync = trpc.parts.syncRevision.useMutation({
-    onSuccess: (res) => {
-      invalidateAll();
-      if (res.changed) {
-        toast.warning(
-          "Onshape design changed — review and re-route as needed.",
-        );
-      } else {
-        toast.success("Up to date with Onshape");
-      }
     },
     onError: (e) => toast.error(e.message),
   });
@@ -181,12 +173,31 @@ export function PartListRow({
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <div className="group relative flex items-stretch gap-4 rounded-lg border border-border bg-card p-3 hover:border-primary/40 hover:shadow-sm transition-all">
+          <div
+            className={
+              "group relative flex items-stretch gap-4 rounded-lg border bg-card p-3 hover:shadow-sm transition-all " +
+              (selected
+                ? "border-primary/60 ring-1 ring-primary/30"
+                : "border-border hover:border-primary/40")
+            }
+          >
             <Link
               href={`/parts/${part.id}`}
               className="absolute inset-0 z-0 rounded-lg"
               aria-label={`Open ${part.name}`}
             />
+            {onSelectedChange && (
+              <div
+                className="relative z-20 flex items-start pt-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Checkbox
+                  checked={!!selected}
+                  onCheckedChange={(c) => onSelectedChange(!!c)}
+                  aria-label={`Select ${part.name}`}
+                />
+              </div>
+            )}
             <div className="w-28 shrink-0 relative z-10 pointer-events-none">
               <PartThumbnail url={part.thumbnailUrl} alt={part.name} />
             </div>
@@ -198,17 +209,23 @@ export function PartListRow({
                     <span className="font-mono text-xs text-muted-foreground">
                       {part.partNumber}
                     </span>
-                    {part.designChanged && (
-                      <Badge
-                        variant="warning"
-                        className="gap-1 ring-1 ring-amber-500/30"
-                      >
-                        <AlertTriangle className="h-3 w-3" />
-                        Design changed
-                      </Badge>
-                    )}
                     {part.type === "cots" && (
                       <Badge variant="muted">COTS</Badge>
+                    )}
+                    {(part.onshapeVersionName || part.onshapeVersionId) && (
+                      <Badge
+                        variant="muted"
+                        className="gap-1 font-mono text-[10px]"
+                        title={
+                          part.onshapeVersionName
+                            ? `Pinned to Onshape version "${part.onshapeVersionName}"`
+                            : `Pinned to Onshape version ${part.onshapeVersionId}`
+                        }
+                      >
+                        <GitBranch className="h-3 w-3" />
+                        {part.onshapeVersionName ??
+                          `${part.onshapeVersionId!.slice(0, 8)}…`}
+                      </Badge>
                     )}
                     {part.stockType && part.stockType !== "auto" && (
                       <Badge
@@ -465,15 +482,6 @@ export function PartListRow({
             </>
           )}
 
-          {part.onshapePartId && (
-            <ContextMenuItem
-              onSelect={() => sync.mutate({ id: part.id })}
-              disabled={sync.isPending}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Check for design changes
-            </ContextMenuItem>
-          )}
           {part.onshapeUrl && (
             <ContextMenuItem
               onSelect={() => window.open(part.onshapeUrl!, "_blank")}

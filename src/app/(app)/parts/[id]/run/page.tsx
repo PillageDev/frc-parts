@@ -60,9 +60,6 @@ export default function RunPage({
     },
     onError: (e) => toast.error(e.message),
   });
-  const setActuals = trpc.parts.setStepActuals.useMutation({
-    onSuccess: () => utils.parts.byId.invalidate(),
-  });
   const start = trpc.parts.startManufacturing.useMutation({
     onSuccess: () => {
       utils.parts.byId.invalidate();
@@ -198,6 +195,7 @@ export default function RunPage({
                   ? `${current.machine.name} · ${machineKindLabel[current.machine.kind]}`
                   : "No machine assigned"
               }
+              partAttachmentKinds={p.attachments.map((a) => a.fileKind)}
               onStart={() => {
                 if (current.status === "not_started") {
                   start.mutate({ id: p.id });
@@ -224,12 +222,6 @@ export default function RunPage({
                 setStepStatus.mutate({
                   stepId: current.id,
                   status: "qc_check",
-                })
-              }
-              onActuals={(min) =>
-                setActuals.mutate({
-                  stepId: current.id,
-                  actualMinutes: min,
                 })
               }
               isPending={setStepStatus.isPending || start.isPending}
@@ -271,11 +263,8 @@ export default function RunPage({
                       {op.machine
                         ? `${op.machine.name} · ${machineKindLabel[op.machine.kind]}`
                         : "Unassigned"}
-                      {op.estMinutes != null && (
-                        <span> · est {formatMinutes(op.estMinutes)}</span>
-                      )}
                       {op.actualMinutes != null && (
-                        <span> · actual {formatMinutes(op.actualMinutes)}</span>
+                        <span> · {formatMinutes(op.actualMinutes)}</span>
                       )}
                     </div>
                   </div>
@@ -336,39 +325,33 @@ export default function RunPage({
 function CurrentStepCard({
   step,
   machineName,
+  partAttachmentKinds,
   onStart,
   onPause,
   onComplete,
   onSendToQc,
-  onActuals,
   isPending,
 }: {
   step: {
     id: string;
     name: string;
     status: StepStatus;
-    estMinutes: number | null;
     actualMinutes: number | null;
     startedAt: Date | null;
     notes: string | null;
+    requireFile: boolean;
+    requireFileKind: string | null;
+    requireNote: boolean;
   };
   machineName: string;
+  partAttachmentKinds: string[];
   onStart: () => void;
   onPause: () => void;
   onComplete: () => void;
   onSendToQc: () => void;
-  onActuals: (m: number) => void;
   isPending: boolean;
 }) {
   const isRunning = step.status === "in_progress";
-  const [actualDraft, setActualDraft] = useState<string>(
-    step.actualMinutes != null ? String(step.actualMinutes) : "",
-  );
-  useEffect(() => {
-    setActualDraft(
-      step.actualMinutes != null ? String(step.actualMinutes) : "",
-    );
-  }, [step.actualMinutes]);
 
   // Live elapsed timer when running.
   const [now, setNow] = useState(() => Date.now());
@@ -385,12 +368,20 @@ function CurrentStepCard({
         )
       : null;
 
+  const fileSatisfied =
+    !step.requireFile ||
+    (step.requireFileKind
+      ? partAttachmentKinds.includes(step.requireFileKind)
+      : partAttachmentKinds.length > 0);
+  const noteSatisfied = !step.requireNote || (step.notes ?? "").trim().length > 0;
+  const reqsMet = fileSatisfied && noteSatisfied;
+
   return (
     <Card className="border-primary/40 ring-1 ring-primary/20">
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/15 text-primary-foreground/90">
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/15 text-foreground">
               {isRunning ? (
                 <PlayCircle className="h-5 w-5" />
               ) : (
@@ -402,31 +393,23 @@ function CurrentStepCard({
               <CardDescription>{machineName}</CardDescription>
             </div>
           </div>
-          <Badge variant="secondary">
-            {step.status.replace("_", " ")}
-          </Badge>
+          <Badge variant="secondary">{step.status.replace("_", " ")}</Badge>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex items-center gap-4 text-sm flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">Estimated:</span>
-            <span className="font-medium">
-              {step.estMinutes != null
-                ? formatMinutes(step.estMinutes)
-                : "—"}
-            </span>
-          </div>
           {elapsedMinutes != null && (
             <div className="flex items-center gap-1.5">
+              <Clock className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-muted-foreground">Elapsed:</span>
               <span className="font-medium font-mono">
                 {formatMinutes(elapsedMinutes)}
               </span>
-              {step.estMinutes != null && elapsedMinutes > step.estMinutes && (
-                <Badge variant="warning">over estimate</Badge>
-              )}
+            </div>
+          )}
+          {step.actualMinutes != null && (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              Last run: {formatMinutes(step.actualMinutes)}
             </div>
           )}
           {step.startedAt && !isRunning && (
@@ -435,6 +418,26 @@ function CurrentStepCard({
             </div>
           )}
         </div>
+
+        {(step.requireFile || step.requireNote) && (
+          <div className="flex flex-col gap-1.5 rounded-md border border-border bg-muted/30 p-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Required to mark complete
+            </div>
+            {step.requireFile && (
+              <ReqLine ok={fileSatisfied}>
+                {step.requireFileKind
+                  ? `Attach a .${step.requireFileKind} file to the part`
+                  : "Attach at least one file to the part"}
+              </ReqLine>
+            )}
+            {step.requireNote && (
+              <ReqLine ok={noteSatisfied}>
+                Add an operator note to this step
+              </ReqLine>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-2 flex-wrap">
           {!isRunning ? (
@@ -446,7 +449,16 @@ function CurrentStepCard({
             </Button>
           ) : (
             <>
-              <Button onClick={onComplete} disabled={isPending} size="lg">
+              <Button
+                onClick={onComplete}
+                disabled={isPending || !reqsMet}
+                size="lg"
+                title={
+                  reqsMet
+                    ? "Mark this step complete"
+                    : "Complete the requirements above first"
+                }
+              >
                 <Check className="h-4 w-4" />
                 Mark complete
               </Button>
@@ -471,31 +483,36 @@ function CurrentStepCard({
             </>
           )}
         </div>
-
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground uppercase tracking-wider">
-            Log actual minutes
-          </span>
-          <Input
-            type="number"
-            min={0}
-            value={actualDraft}
-            onChange={(e) => setActualDraft(e.target.value)}
-            onBlur={() => {
-              const n = Number(actualDraft);
-              if (!Number.isNaN(n) && n !== step.actualMinutes) {
-                onActuals(n);
-              }
-            }}
-            className="h-8 w-24"
-          />
-          {step.actualMinutes != null && step.estMinutes != null && (
-            <span className="text-[11px] text-muted-foreground">
-              vs est {formatMinutes(step.estMinutes)}
-            </span>
-          )}
-        </label>
       </CardContent>
     </Card>
+  );
+}
+
+function ReqLine({
+  ok,
+  children,
+}: {
+  ok: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={
+        "flex items-center gap-2 text-xs " +
+        (ok ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400")
+      }
+    >
+      <span
+        className={
+          "inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm " +
+          (ok
+            ? "bg-emerald-500/15 border border-emerald-500/40"
+            : "border border-amber-500/60")
+        }
+      >
+        {ok && <Check className="h-2.5 w-2.5" />}
+      </span>
+      <span>{children}</span>
+    </div>
   );
 }

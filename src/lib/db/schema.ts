@@ -180,12 +180,11 @@ export const part = sqliteTable(
     onshapePartId: text("onshape_part_id"),
     onshapeElementId: text("onshape_element_id"),
     onshapeVersionId: text("onshape_version_id"),
+    /** Human-readable version name from Onshape (e.g. "v3 - hood fix"). */
+    onshapeVersionName: text("onshape_version_name"),
     onshapeMicroversionId: text("onshape_microversion_id"),
     onshapeUrl: text("onshape_url"),
     thumbnailUrl: text("thumbnail_url"),
-    designChanged: integer("design_changed", { mode: "boolean" })
-      .notNull()
-      .default(false),
     lastSyncedAt: integer("last_synced_at", { mode: "timestamp" }),
 
     // Geometry / material
@@ -294,7 +293,16 @@ export const routeTemplateStep = sqliteTable(
     }),
     /** Fallback used if `machineId` isn't set or the machine was deleted. */
     machineKind: text("machine_kind", { enum: MACHINE_KINDS }).notNull(),
-    estMinutes: integer("est_minutes").notNull().default(15),
+    // Conditions that must be met before this step can be marked complete.
+    requireFile: integer("require_file", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /** When set, the part must have an attachment of this kind. */
+    requireFileKind: text("require_file_kind"),
+    /** Operator must enter an op note before completing. */
+    requireNote: integer("require_note", { mode: "boolean" })
+      .notNull()
+      .default(false),
   },
   (t) => [
     index("template_step_template_idx").on(t.templateId),
@@ -339,12 +347,19 @@ export const operation = sqliteTable(
     status: text("status", { enum: STEP_STATUSES })
       .notNull()
       .default("not_started"),
-    estMinutes: integer("est_minutes"),
     actualMinutes: integer("actual_minutes"),
     autoAssigned: integer("auto_assigned", { mode: "boolean" })
       .notNull()
       .default(true),
     notes: text("notes"),
+    // Conditions inherited from the template — checked before mark-complete.
+    requireFile: integer("require_file", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    requireFileKind: text("require_file_kind"),
+    requireNote: integer("require_note", { mode: "boolean" })
+      .notNull()
+      .default(false),
     startedAt: integer("started_at", { mode: "timestamp" }),
     completedAt: integer("completed_at", { mode: "timestamp" }),
     assignedTo: text("assigned_to").references(() => user.id, {

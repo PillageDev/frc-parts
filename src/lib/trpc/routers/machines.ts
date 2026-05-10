@@ -18,7 +18,7 @@ export const machinesRouter = router({
         queued: sql<number>`COALESCE(SUM(CASE WHEN ${operation.status} IN ('not_started','in_queue') THEN 1 ELSE 0 END), 0)`,
         active: sql<number>`COALESCE(SUM(CASE WHEN ${operation.status} = 'in_progress' THEN 1 ELSE 0 END), 0)`,
         done: sql<number>`COALESCE(SUM(CASE WHEN ${operation.status} = 'complete' THEN 1 ELSE 0 END), 0)`,
-        estPendingMinutes: sql<number>`COALESCE(SUM(CASE WHEN ${operation.status} IN ('not_started','in_queue','in_progress') THEN COALESCE(${operation.estMinutes}, 0) ELSE 0 END), 0)`,
+        pendingCount: sql<number>`COALESCE(SUM(CASE WHEN ${operation.status} IN ('not_started','in_queue','in_progress') THEN 1 ELSE 0 END), 0)`,
       })
       .from(machine)
       .leftJoin(operation, eq(operation.machineId, machine.id))

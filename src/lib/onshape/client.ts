@@ -234,8 +234,10 @@ export type MassProperties = {
   bodies: Record<
     string,
     {
-      mass: [number, number, number]; // value + min/max bounds
-      volume: [number, number, number];
+      // Onshape says "value, min, max" but in practice these can be omitted
+      // for surfaces, zero-volume bodies, etc. Treat them as best-effort.
+      mass?: number[];
+      volume?: number[];
       centroid?: number[];
       principalInertia?: number[];
     }
@@ -331,6 +333,28 @@ export const onshape = {
   async getDocument(documentId: string) {
     return onshapeFetch<OnshapeDocument>({
       path: `/api/v6/documents/${documentId}`,
+    });
+  },
+
+  async listVersions(documentId: string): Promise<
+    Array<{
+      id: string;
+      name: string;
+      createdAt?: string;
+      description?: string;
+      microversion?: string;
+    }>
+  > {
+    return onshapeFetch<
+      Array<{
+        id: string;
+        name: string;
+        createdAt?: string;
+        description?: string;
+        microversion?: string;
+      }>
+    >({
+      path: `/api/v6/documents/d/${documentId}/versions`,
     });
   },
 
@@ -602,7 +626,9 @@ export async function fetchPartSnapshot(opts: {
   }
 
   // The mass-properties endpoint keys bodies by the part id. Pull the
-  // numeric values out, defaulting to null when not available.
+  // numeric values out, defaulting to null when not available. Some bodies
+  // (sketch surfaces, zero-volume placeholders, configured-out parts) come
+  // back without a mass/volume array, so guard every dereference.
   let massGrams: number | null = null;
   let volumeMm3: number | null = null;
   if (mass) {
@@ -610,12 +636,23 @@ export async function fetchPartSnapshot(opts: {
       mass.bodies[opts.partId] ?? Object.values(mass.bodies)[0];
     if (body) {
       // Onshape returns mass in kilograms, volume in m^3.
-      massGrams = body.mass[0] * 1000;
-      volumeMm3 = body.volume[0] * 1_000_000_000;
+      const m = Array.isArray(body.mass) ? body.mass[0] : undefined;
+      const v = Array.isArray(body.volume) ? body.volume[0] : undefined;
+      if (typeof m === "number" && Number.isFinite(m)) massGrams = m * 1000;
+      if (typeof v === "number" && Number.isFinite(v))
+        volumeMm3 = v * 1_000_000_000;
     }
   }
   let box: PartSnapshot["bbox"] = null;
-  if (bbox) {
+  if (
+    bbox &&
+    typeof bbox.lowX === "number" &&
+    typeof bbox.highX === "number" &&
+    typeof bbox.lowY === "number" &&
+    typeof bbox.highY === "number" &&
+    typeof bbox.lowZ === "number" &&
+    typeof bbox.highZ === "number"
+  ) {
     box = {
       // Onshape returns meters → convert to mm.
       x: (bbox.highX - bbox.lowX) * 1000,

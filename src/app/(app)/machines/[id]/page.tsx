@@ -68,10 +68,6 @@ export default function MachinePage({
   const onQc = operations.filter((r) => r.op.status === "qc_check");
   const done = operations.filter((r) => r.op.status === "complete");
 
-  const totalQueueMinutes = queued
-    .concat(inProgress)
-    .reduce((n, r) => n + (r.op.estMinutes ?? 0), 0);
-
   const nextUp = queued[0];
 
   return (
@@ -100,9 +96,7 @@ export default function MachinePage({
             <div className="text-xs text-muted-foreground mt-1 flex items-center gap-3">
               <span className="inline-flex items-center gap-1">
                 <Clock className="h-3 w-3" />
-                {totalQueueMinutes > 0
-                  ? `${formatMinutes(totalQueueMinutes)} of work pending`
-                  : "Idle"}
+                {queued.length + inProgress.length === 0 ? "Idle" : "Active"}
               </span>
               <span>·</span>
               <span>
@@ -296,7 +290,6 @@ type Op = {
   id: string;
   name: string;
   status: StepStatus;
-  estMinutes: number | null;
   actualMinutes: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
@@ -355,12 +348,7 @@ function QueueCard({
       <div className="text-[11px] text-muted-foreground font-mono truncate">
         {part.partNumber}
       </div>
-      <div className="text-[11px] text-muted-foreground">
-        {op.name}
-        {op.estMinutes != null && (
-          <span> · est {formatMinutes(op.estMinutes)}</span>
-        )}
-      </div>
+      <div className="text-[11px] text-muted-foreground">{op.name}</div>
       <div className="flex items-center justify-between gap-2">
         <Button
           size="sm"
@@ -427,9 +415,6 @@ function ActiveJob({
         </div>
         <div className="text-xs text-muted-foreground mt-0.5">
           {op.name}
-          {op.estMinutes != null && (
-            <span> · est {formatMinutes(op.estMinutes)}</span>
-          )}
           {op.startedAt && (
             <span> · started {timeAgo(op.startedAt)}</span>
           )}

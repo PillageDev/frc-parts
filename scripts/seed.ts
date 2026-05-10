@@ -117,7 +117,6 @@ type TemplateSeed = {
       | "bench"
       | "waterjet"
       | "outsource";
-    estMinutes: number;
   }>;
 };
 
@@ -129,8 +128,8 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: true,
     sortOrder: 10,
     steps: [
-      { sequence: 0, name: "Cut to length on Bandsaw", machineKind: "bandsaw", estMinutes: 10 },
-      { sequence: 1, name: "Deburr cut ends (manual)", machineKind: "bench", estMinutes: 4 },
+      { sequence: 0, name: "Cut to length on Bandsaw", machineKind: "bandsaw" },
+      { sequence: 1, name: "Deburr cut ends (manual)", machineKind: "bench" },
     ],
   },
   {
@@ -140,9 +139,9 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: true,
     sortOrder: 20,
     steps: [
-      { sequence: 0, name: "CNC Router (sheet)", machineKind: "cnc_router", estMinutes: 20 },
-      { sequence: 1, name: "Deburr Edges (manual)", machineKind: "bench", estMinutes: 8 },
-      { sequence: 2, name: "Tap Mounting Holes (manual)", machineKind: "bench", estMinutes: 10 },
+      { sequence: 0, name: "CNC Router (sheet)", machineKind: "cnc_router" },
+      { sequence: 1, name: "Deburr Edges (manual)", machineKind: "bench" },
+      { sequence: 2, name: "Tap Mounting Holes (manual)", machineKind: "bench" },
     ],
   },
   {
@@ -152,8 +151,8 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: true,
     sortOrder: 30,
     steps: [
-      { sequence: 0, name: "CNC Mill", machineKind: "cnc_mill", estMinutes: 30 },
-      { sequence: 1, name: "Deburr & Tap (manual)", machineKind: "bench", estMinutes: 8 },
+      { sequence: 0, name: "CNC Mill", machineKind: "cnc_mill" },
+      { sequence: 1, name: "Deburr & Tap (manual)", machineKind: "bench" },
     ],
   },
   {
@@ -163,9 +162,9 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: true,
     sortOrder: 40,
     steps: [
-      { sequence: 0, name: "Turn on Lathe", machineKind: "lathe", estMinutes: 25 },
-      { sequence: 1, name: "Cross-drill on Bridgeport", machineKind: "manual_mill", estMinutes: 8 },
-      { sequence: 2, name: "Tap by Hand", machineKind: "bench", estMinutes: 5 },
+      { sequence: 0, name: "Turn on Lathe", machineKind: "lathe" },
+      { sequence: 1, name: "Cross-drill on Bridgeport", machineKind: "manual_mill" },
+      { sequence: 2, name: "Tap by Hand", machineKind: "bench" },
     ],
   },
   {
@@ -175,8 +174,8 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: true,
     sortOrder: 50,
     steps: [
-      { sequence: 0, name: "3D Print", machineKind: "3d_printer", estMinutes: 60 },
-      { sequence: 1, name: "Deburr / Clean Supports (manual)", machineKind: "bench", estMinutes: 10 },
+      { sequence: 0, name: "3D Print", machineKind: "3d_printer" },
+      { sequence: 1, name: "Deburr / Clean Supports (manual)", machineKind: "bench" },
     ],
   },
   {
@@ -186,7 +185,7 @@ const TEMPLATES: TemplateSeed[] = [
     isAutoDetectable: false,
     sortOrder: 60,
     steps: [
-      { sequence: 0, name: "Manual Fabrication", machineKind: "bench", estMinutes: 30 },
+      { sequence: 0, name: "Manual Fabrication", machineKind: "bench" },
     ],
   },
 ];
@@ -215,7 +214,6 @@ async function seedTemplates() {
         sequence: s.sequence,
         name: s.name,
         machineKind: s.machineKind,
-        estMinutes: s.estMinutes,
       });
     }
     inserted++;

@@ -3,7 +3,6 @@
 import { use, useRef, useState } from "react";
 import Link from "next/link";
 import {
-  AlertTriangle,
   ArrowLeft,
   Download,
   Loader2,
@@ -14,7 +13,6 @@ import { trpc } from "@/lib/trpc/client";
 import { Button } from "@/components/ui/button";
 import { PartThumbnail } from "@/components/parts/part-thumbnail";
 import { machineKindLabel, priorityLabel } from "@/lib/labels";
-import { formatMinutes } from "@/lib/utils";
 import { toast } from "sonner";
 
 const MM_TO_IN = 1 / 25.4;
@@ -110,10 +108,6 @@ export default function InstructionsPage({
       setExporting(false);
     }
   }
-  const totalEst = p.operations.reduce(
-    (n, op) => n + (op.estMinutes ?? 0),
-    0,
-  );
   const generatedAt = new Date();
 
   const stockSize =
@@ -226,11 +220,6 @@ export default function InstructionsPage({
                   p.massGrams != null ? formatWeight(p.massGrams) : "—"
                 }
                 mono
-              />
-              <SpecRow
-                label="Total est."
-                value={totalEst > 0 ? formatMinutes(totalEst) : "—"}
-                mono
                 rightBorder={false}
               />
               <SpecRow
@@ -265,7 +254,6 @@ export default function InstructionsPage({
                       <Th className="w-8 text-center">#</Th>
                       <Th>Operation</Th>
                       <Th>Machine</Th>
-                      <Th className="w-16 text-right pr-3">Est</Th>
                       <Th className="w-12 text-center">Done</Th>
                     </tr>
                   </thead>
@@ -296,11 +284,6 @@ export default function InstructionsPage({
                             </div>
                           )}
                         </td>
-                        <td className="px-2 py-1.5 text-right font-mono pr-3">
-                          {op.estMinutes != null
-                            ? `${op.estMinutes}m`
-                            : "—"}
-                        </td>
                         <td className="px-2 py-1.5 text-center">
                           <div className="inline-block w-3.5 h-3.5 border border-neutral-700" />
                         </td>
@@ -319,12 +302,6 @@ export default function InstructionsPage({
             <div className="uppercase tracking-[0.2em] text-neutral-500">
               Notes
             </div>
-            {p.designChanged && (
-              <div className="flex items-center gap-1.5 text-amber-700 font-semibold">
-                <AlertTriangle className="h-3 w-3" />
-                Design changed in CAD — verify revision before cutting.
-              </div>
-            )}
             {p.notes ? (
               <div className="text-[11px] leading-snug text-neutral-800 whitespace-pre-wrap line-clamp-4">
                 {p.notes}

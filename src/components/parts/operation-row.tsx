@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import {
-  Calculator,
   Check,
   CircleDashed,
   ListChecks,
@@ -56,6 +55,7 @@ export function OperationRow({
   const utils = trpc.useUtils();
   const setStatus = trpc.parts.setStepStatus.useMutation({
     onSuccess: () => utils.parts.byId.invalidate(),
+    onError: (e) => toast.error(e.message),
   });
   const reassign = trpc.parts.reassignStep.useMutation({
     onSuccess: () => {
@@ -66,22 +66,10 @@ export function OperationRow({
   const removeStep = trpc.parts.removeStep.useMutation({
     onSuccess: () => utils.parts.byId.invalidate(),
   });
-  const setEstimate = trpc.parts.setStepEstimate.useMutation({
-    onSuccess: () => utils.parts.byId.invalidate(),
-  });
   const setActuals = trpc.parts.setStepActuals.useMutation({
     onSuccess: () => utils.parts.byId.invalidate(),
   });
-  const autoEstimate = trpc.parts.estimateForStep.useMutation({
-    onSuccess: () => {
-      utils.parts.byId.invalidate();
-      toast.success("Estimate updated from geometry");
-    },
-  });
 
-  const [estDraft, setEstDraft] = useState<string>(
-    op.estMinutes != null ? String(op.estMinutes) : "",
-  );
   const [actualDraft, setActualDraft] = useState<string>(
     op.actualMinutes != null ? String(op.actualMinutes) : "",
   );
@@ -99,6 +87,16 @@ export function OperationRow({
               {op.autoAssigned && (
                 <Badge variant="muted" className="text-[10px]">
                   auto
+                </Badge>
+              )}
+              {op.requireFile && (
+                <Badge variant="warning" className="text-[10px]">
+                  needs {op.requireFileKind ?? "file"}
+                </Badge>
+              )}
+              {op.requireNote && (
+                <Badge variant="warning" className="text-[10px]">
+                  needs note
                 </Badge>
               )}
             </div>
@@ -152,7 +150,7 @@ export function OperationRow({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
         <label className="flex flex-col gap-1.5">
           <span className="text-muted-foreground uppercase tracking-wider text-[10px]">
             Machine override
@@ -181,36 +179,6 @@ export function OperationRow({
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-muted-foreground uppercase tracking-wider text-[10px]">
-            Est. minutes
-          </span>
-          <div className="flex gap-1">
-            <Input
-              type="number"
-              min={0}
-              value={estDraft}
-              onChange={(e) => setEstDraft(e.target.value)}
-              onBlur={() => {
-                const n = Number(estDraft);
-                if (!Number.isNaN(n) && n !== op.estMinutes) {
-                  setEstimate.mutate({ stepId: op.id, estMinutes: n });
-                }
-              }}
-              className="h-8"
-            />
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-              title="Auto-estimate from geometry"
-              onClick={() => autoEstimate.mutate({ stepId: op.id })}
-              disabled={!op.machineId}
-            >
-              <Calculator className="h-4 w-4" />
-            </Button>
-          </div>
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className="text-muted-foreground uppercase tracking-wider text-[10px]">
             Actual minutes
           </span>
           <Input
@@ -229,24 +197,9 @@ export function OperationRow({
         </label>
       </div>
 
-      {op.estMinutes != null && (
+      {op.actualMinutes != null && (
         <div className="text-[11px] text-muted-foreground">
-          Est. {formatMinutes(op.estMinutes)}
-          {op.actualMinutes != null && (
-            <span className="ml-3">
-              Actual {formatMinutes(op.actualMinutes)} ·{" "}
-              <span
-                className={
-                  op.actualMinutes > op.estMinutes
-                    ? "text-destructive"
-                    : "text-emerald-600 dark:text-emerald-400"
-                }
-              >
-                {op.actualMinutes > op.estMinutes ? "+" : "-"}
-                {Math.abs(op.actualMinutes - op.estMinutes)}m vs est
-              </span>
-            </span>
-          )}
+          Logged {formatMinutes(op.actualMinutes)}
         </div>
       )}
     </div>

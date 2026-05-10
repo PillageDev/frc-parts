@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   ExternalLink,
+  GitMerge,
   Hash,
   KeyRound,
   Loader2,
@@ -24,6 +25,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -51,9 +60,12 @@ export default function ImportPage() {
         <h1 className="font-serif text-3xl font-semibold tracking-tight">
           Import from Onshape
         </h1>
-        <p className="text-muted-foreground mt-1">
-          Pulls part name, material, mass, volume, bounding box, and thumbnail
-          live from Onshape. Auto-routes custom parts to a machine queue.
+        <p className="text-muted-foreground mt-1 max-w-2xl">
+          Imports are gated on Onshape <strong>Versions</strong>. Create a
+          named Version in Onshape (Document → Versions/History → Create
+          Version), then bring its parts into SpikeParts. Live workspace
+          imports are disabled — every part on the floor must trace to an
+          immutable revision.
         </p>
       </div>
 
@@ -72,8 +84,8 @@ function SetupGuide() {
             <CardTitle>Connect your Onshape account</CardTitle>
             <CardDescription className="mt-1">
               SpikeParts authenticates against Onshape using API keys. Each
-              request is signed with HMAC-SHA256 — your secret never leaves the
-              server.
+              request is signed with HMAC-SHA256 — your secret never leaves
+              the server.
             </CardDescription>
           </div>
         </div>
@@ -81,45 +93,22 @@ function SetupGuide() {
       <CardContent className="flex flex-col gap-3 text-sm">
         <ol className="list-decimal pl-5 flex flex-col gap-2 leading-relaxed">
           <li>
-            Open the{" "}
+            Get keys at{" "}
             <a
               href="https://dev-portal.onshape.com/keys"
               target="_blank"
               rel="noreferrer"
               className="underline"
             >
-              Onshape Developer Portal — API Keys
+              dev-portal.onshape.com/keys
             </a>{" "}
-            and click <strong>Create new API key</strong>.
+            — pick scope <code className="font-mono text-xs">OAuth2Read</code>.
           </li>
           <li>
-            Pick the scopes:
-            <ul className="list-disc pl-6 mt-1">
-              <li>
-                <code className="font-mono text-xs">OAuth2Read</code> — read
-                documents, elements, parts
-              </li>
-              <li>
-                <code className="font-mono text-xs">OAuth2ReadPII</code>{" "}
-                <span className="text-muted-foreground">
-                  (optional — owner names)
-                </span>
-              </li>
-            </ul>
-          </li>
-          <li>
-            Copy the <strong>Access Key</strong> and <strong>Secret Key</strong>{" "}
-            (Onshape only shows the secret once).
-          </li>
-          <li>
-            Paste them into{" "}
-            <code className="font-mono text-xs">.env.local</code> in the project
-            root:
+            Paste them into <code className="font-mono text-xs">.env.local</code>:
             <pre className="mt-2 rounded-md bg-muted/60 p-3 font-mono text-xs leading-relaxed border border-border whitespace-pre-wrap">
-{`ONSHAPE_ACCESS_KEY=your-access-key
-ONSHAPE_SECRET_KEY=your-secret-key
-# optional, defaults to https://cad.onshape.com
-# ONSHAPE_BASE_URL=https://cad.onshape.com`}
+{`ONSHAPE_ACCESS_KEY=…
+ONSHAPE_SECRET_KEY=…`}
             </pre>
           </li>
           <li>
@@ -131,8 +120,6 @@ ONSHAPE_SECRET_KEY=your-secret-key
         <p className="text-muted-foreground">
           The signing implementation lives at{" "}
           <code className="font-mono text-xs">src/lib/onshape/client.ts</code>.
-          Documents you import must be readable by the account that owns the
-          API key — share them in Onshape if needed.
         </p>
       </CardContent>
     </Card>
@@ -154,11 +141,11 @@ function ImportFlow() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Search className="h-4 w-4" />
-            Paste an Onshape link
+            Paste an Onshape document link
           </CardTitle>
           <CardDescription>
-            Paste a URL pointing at a Part Studio, Assembly, or whole document.
-            We&apos;ll list elements and parts so you can choose what to import.
+            Anywhere in the document is fine — we just read the document ID.
+            Once resolved, you&apos;ll pick which Version to import from.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -172,7 +159,7 @@ function ImportFlow() {
             <Input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://cad.onshape.com/documents/…/w/…/e/…"
+              placeholder="https://cad.onshape.com/documents/…"
               className="font-mono text-xs"
             />
             <Button type="submit" disabled={!url.trim()}>
@@ -207,8 +194,8 @@ function ImportFlow() {
 
       {resolved.data && (
         <ResolvedView
-          ref_={resolved.data.ref}
-          elements={resolved.data.elements}
+          documentId={resolved.data.ref.documentId}
+          versions={resolved.data.versions}
         />
       )}
     </div>
@@ -216,74 +203,136 @@ function ImportFlow() {
 }
 
 function ResolvedView({
-  ref_,
-  elements,
+  documentId,
+  versions,
 }: {
-  ref_: {
-    documentId: string;
-    workspaceId?: string;
-    versionId?: string;
-    elementId?: string;
-  };
-  elements: Array<{ id: string; name: string; elementType: string }>;
+  documentId: string;
+  versions: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    createdAt?: string;
+    microversion?: string;
+  }>;
 }) {
-  const utils = trpc.useUtils();
-
-  const initial =
-    (ref_.elementId &&
-      elements.find((e) => e.id === ref_.elementId)?.id) ||
-    elements.find((e) => e.elementType === "PARTSTUDIO")?.id ||
-    elements[0]?.id;
-
-  const [selectedElementId, setSelectedElementId] = useState<string | undefined>(
-    initial,
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
+    versions[0]?.id ?? null,
   );
-  useEffect(() => {
-    setSelectedElementId(initial);
-  }, [initial]);
-
-  const selectedElement = useMemo(
-    () => elements.find((e) => e.id === selectedElementId),
-    [elements, selectedElementId],
+  const selectedVersion = useMemo(
+    () => versions.find((v) => v.id === selectedVersionId) ?? null,
+    [versions, selectedVersionId],
   );
-  const partStudios = elements.filter((e) => e.elementType === "PARTSTUDIO");
 
-  const importable = selectedElement?.elementType === "PARTSTUDIO";
-
-  const contents = trpc.parts.onshapeElementContents.useQuery(
+  const elements = trpc.parts.listVersionElements.useQuery(
     {
-      documentId: ref_.documentId,
-      workspaceId: ref_.workspaceId,
-      versionId: ref_.versionId,
-      elementId: selectedElementId ?? "",
-      elementType: "PARTSTUDIO",
+      documentId,
+      versionId: selectedVersionId ?? "",
     },
     {
-      enabled: Boolean(selectedElementId) && importable,
+      enabled: Boolean(selectedVersionId),
       retry: false,
     },
   );
 
-  const importPart = trpc.parts.importPart.useMutation({
-    onSuccess: () => {
-      utils.parts.list.invalidate();
-      utils.dashboard.summary.invalidate();
-      toast.success("Part imported and routed");
-    },
-    onError: (e) => toast.error(e.message),
-  });
+  // Derived: user pick wins, else first available element. Avoids the
+  // setState-in-effect anti-pattern (lint: react-hooks/set-state-in-effect).
+  const [userSelectedElementId, setUserSelectedElementId] = useState<
+    string | null
+  >(null);
+  const selectedElementId =
+    (userSelectedElementId &&
+      elements.data?.find((e) => e.id === userSelectedElementId)?.id) ||
+    elements.data?.[0]?.id ||
+    null;
+  const setSelectedElementId = (id: string | null) =>
+    setUserSelectedElementId(id);
+
+  if (versions.length === 0) {
+    return (
+      <Card className="border-amber-500/40 bg-amber-500/5">
+        <CardContent className="py-5 flex items-start gap-3 text-sm">
+          <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5" />
+          <div>
+            <div className="font-medium">
+              No released Versions in this document yet
+            </div>
+            <div className="text-muted-foreground mt-1">
+              Open the document in Onshape, click the document name →{" "}
+              <strong>Versions and history</strong> → <strong>Create version</strong>,
+              then come back here.
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-3">
+    <div className="grid grid-cols-1 lg:grid-cols-[260px_280px_1fr] gap-3">
+      {/* Versions */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <GitMerge className="h-3.5 w-3.5" />
+            Versions
+          </CardTitle>
+          <CardDescription className="text-[11px]">
+            Pick which release to import from.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-1">
+          {versions.map((v) => {
+            const active = v.id === selectedVersionId;
+            return (
+              <button
+                key={v.id}
+                onClick={() => {
+                  setSelectedVersionId(v.id);
+                  setSelectedElementId(null);
+                }}
+                className={
+                  "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors " +
+                  (active
+                    ? "bg-accent text-accent-foreground"
+                    : "hover:bg-muted")
+                }
+              >
+                <span className="truncate font-medium">{v.name}</span>
+                {v.createdAt && (
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    {new Date(v.createdAt).toLocaleString()}
+                  </span>
+                )}
+                {v.description && (
+                  <span className="text-[11px] text-muted-foreground line-clamp-2">
+                    {v.description}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </CardContent>
+      </Card>
+
+      {/* Elements within selected version */}
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center gap-2">
             <Hash className="h-3.5 w-3.5" />
-            Document elements
+            Part studios
           </CardTitle>
+          <CardDescription className="text-[11px]">
+            {selectedVersion ? selectedVersion.name : "Pick a version first"}
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-1">
-          {elements.map((el) => {
+          {elements.isFetching && (
+            <div className="text-xs text-muted-foreground py-2 flex items-center gap-2">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Reading elements…
+            </div>
+          )}
+          {elements.data?.map((el) => {
             const active = el.id === selectedElementId;
             return (
               <button
@@ -303,108 +352,182 @@ function ResolvedView({
               </button>
             );
           })}
-          {elements.length === 0 && (
-            <div className="text-xs text-muted-foreground">
-              No part studios in this document.
+          {elements.data?.length === 0 && (
+            <div className="text-xs text-muted-foreground py-2">
+              No part studios in this version.
             </div>
           )}
         </CardContent>
       </Card>
 
-      <div className="flex flex-col gap-3">
-        {selectedElement?.elementType === "PARTSTUDIO" && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <PackageCheck className="h-4 w-4" />
-                Parts in {selectedElement.name}
-              </CardTitle>
-              <CardDescription>
-                Pick the stock type and (optional) drawing per part. Parts with
-                the &quot;Origin Cube Material&quot; placeholder are hidden.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {contents.isFetching && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Reading parts…
-                </div>
-              )}
-              {contents.data?.kind === "parts" &&
-                contents.data.parts.map((p) => (
-                  <PartImportRow
-                    key={p.partId}
-                    part={p}
-                    onImport={(opts) =>
-                      importPart.mutate({
-                        documentId: ref_.documentId,
-                        workspaceId: ref_.workspaceId,
-                        versionId: ref_.versionId,
-                        elementId: selectedElement.id,
-                        partId: p.partId,
-                        type: "custom",
-                        stockType: opts.stockType,
-                        quantity: opts.quantity,
-                        drawing: opts.drawing,
-                      })
-                    }
-                    isPending={importPart.isPending}
-                  />
-                ))}
-              {contents.data?.kind === "parts" &&
-                contents.data.parts.length === 0 && (
-                  <div className="text-sm text-muted-foreground py-2">
-                    Onshape returned no importable parts in this Part Studio.
-                    If you expected parts, check that they&apos;re solid bodies
-                    in the active workspace and the API key has access to this
-                    document.
-                  </div>
-                )}
-              {contents.error && (
-                <div className="text-sm text-destructive py-2">
-                  {contents.error.message}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        {selectedElement?.elementType !== "PARTSTUDIO" && (
-          <Card>
-            <CardContent className="py-6 text-sm text-muted-foreground">
-              Pick a Part Studio on the left to import parts from.
-            </CardContent>
-          </Card>
-        )}
-
-        <Card>
-          <CardContent className="py-3 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-              Onshape connected · {partStudios.length} part studio
-              {partStudios.length === 1 ? "" : "s"}
-            </div>
-            <a
-              href={`https://cad.onshape.com/documents/${ref_.documentId}/${
-                ref_.workspaceId ? `w/${ref_.workspaceId}` : `v/${ref_.versionId}`
-              }`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-            >
-              <ExternalLink className="h-3 w-3" />
-              Open document in Onshape
-            </a>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Parts within selected element */}
+      <PartsPanel
+        documentId={documentId}
+        versionId={selectedVersionId}
+        versionName={selectedVersion?.name ?? ""}
+        elementId={selectedElementId}
+      />
     </div>
+  );
+}
+
+function PartsPanel({
+  documentId,
+  versionId,
+  versionName,
+  elementId,
+}: {
+  documentId: string;
+  versionId: string | null;
+  versionName: string;
+  elementId: string | null;
+}) {
+  const utils = trpc.useUtils();
+  const contents = trpc.parts.onshapeElementContents.useQuery(
+    {
+      documentId,
+      versionId: versionId ?? "",
+      elementId: elementId ?? "",
+      elementType: "PARTSTUDIO",
+    },
+    {
+      enabled: Boolean(versionId && elementId),
+      retry: false,
+    },
+  );
+  const partIdsForCheck = useMemo(
+    () =>
+      contents.data?.kind === "parts"
+        ? contents.data.parts.map((p) => p.partId)
+        : [],
+    [contents.data],
+  );
+  const dupes = trpc.parts.checkDuplicates.useQuery(
+    {
+      documentId,
+      elementId: elementId ?? "",
+      partIds: partIdsForCheck,
+    },
+    {
+      enabled: Boolean(elementId) && partIdsForCheck.length > 0,
+      staleTime: 30_000,
+    },
+  );
+  const duplicateMap = useMemo(() => {
+    const m = new Map<
+      string,
+      { id: string; name: string; partNumber: string }
+    >();
+    for (const d of dupes.data ?? []) {
+      if (d.onshapePartId) {
+        m.set(d.onshapePartId, {
+          id: d.id,
+          name: d.name,
+          partNumber: d.partNumber,
+        });
+      }
+    }
+    return m;
+  }, [dupes.data]);
+  const importPart = trpc.parts.importPart.useMutation({
+    onSuccess: () => {
+      utils.parts.list.invalidate();
+      utils.parts.checkDuplicates.invalidate();
+      utils.dashboard.summary.invalidate();
+      toast.success("Part imported and routed");
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  if (!versionId || !elementId) {
+    return (
+      <Card>
+        <CardContent className="py-6 text-sm text-muted-foreground">
+          Pick a version and a part studio on the left.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2">
+          <PackageCheck className="h-4 w-4" />
+          Parts in version {versionName}
+        </CardTitle>
+        <CardDescription>
+          Pick the stock type and (optional) drawing per part. Imported parts
+          are pinned to this version, not the live workspace.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {contents.isFetching && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Reading parts…
+          </div>
+        )}
+        {contents.data?.kind === "parts" &&
+          contents.data.parts.map((p) => (
+            <PartImportRow
+              key={p.partId}
+              part={p}
+              duplicate={duplicateMap.get(p.partId) ?? null}
+              onImport={(opts) =>
+                importPart.mutate({
+                  documentId,
+                  versionId,
+                  versionName,
+                  elementId,
+                  partId: p.partId,
+                  type: "custom",
+                  stockType: opts.stockType,
+                  quantity: opts.quantity,
+                  drawing: opts.drawing,
+                })
+              }
+              isPending={importPart.isPending}
+            />
+          ))}
+        {contents.data?.kind === "parts" && contents.data.parts.length === 0 && (
+          <div className="text-sm text-muted-foreground py-2">
+            Onshape returned no importable parts. Check that the part studio
+            has solid bodies and the API key has read access.
+          </div>
+        )}
+        {contents.error && (
+          <div className="text-sm text-destructive py-2">
+            {contents.error.message}
+          </div>
+        )}
+
+        <Separator className="my-2" />
+        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            Importing from version{" "}
+            <span className="font-mono">{versionName}</span> ·{" "}
+            <span className="font-mono">{versionId.slice(0, 8)}…</span>
+          </div>
+          <a
+            href={`https://cad.onshape.com/documents/${documentId}/v/${versionId}`}
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-foreground inline-flex items-center gap-1"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Open in Onshape
+          </a>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function PartImportRow({
   part,
+  duplicate,
   onImport,
   isPending,
 }: {
@@ -415,6 +538,8 @@ function PartImportRow({
     material?: string | null;
     bodyType?: string;
   };
+  /** Existing manager record if this Onshape part has already been imported. */
+  duplicate: { id: string; name: string; partNumber: string } | null;
   onImport: (opts: {
     stockType: StockType;
     quantity: number;
@@ -426,6 +551,19 @@ function PartImportRow({
   const [quantity, setQuantity] = useState<number>(1);
   const [drawing, setDrawing] = useState<DrawingFile | null>(null);
   const [reading, setReading] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  function attemptImport() {
+    if (duplicate) {
+      setConfirmOpen(true);
+      return;
+    }
+    onImport({ stockType, quantity, drawing: drawing ?? undefined });
+  }
+  function confirmReimport() {
+    setConfirmOpen(false);
+    onImport({ stockType, quantity, drawing: drawing ?? undefined });
+  }
 
   async function pickDrawing(file: File) {
     setReading(true);
@@ -449,12 +587,35 @@ function PartImportRow({
   }
 
   return (
-    <div className="flex items-center gap-3 rounded-md border border-border bg-card p-3 flex-wrap">
+    <div
+      className={
+        "flex items-center gap-3 rounded-md border p-3 flex-wrap " +
+        (duplicate
+          ? "border-blue-500/30 bg-blue-500/5"
+          : "border-border bg-card")
+      }
+    >
       <div className="flex-1 min-w-[180px]">
-        <div className="font-medium truncate">{part.name}</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-medium truncate">{part.name}</span>
+          {duplicate && (
+            <Badge
+              variant="muted"
+              className="text-[10px] bg-blue-500/15 border-blue-500/30 text-blue-700 dark:text-blue-300"
+            >
+              <CheckCircle2 className="h-3 w-3 mr-1" />
+              already in manager
+            </Badge>
+          )}
+        </div>
         <div className="text-[11px] text-muted-foreground font-mono truncate">
           {part.partNumber || part.partId} ·{" "}
           {part.material ?? "no material set"}
+          {duplicate && (
+            <>
+              {" · "}stored as <span className="text-foreground/70">{duplicate.partNumber}</span>
+            </>
+          )}
         </div>
       </div>
       <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground uppercase tracking-wider">
@@ -510,17 +671,37 @@ function PartImportRow({
       )}
       <Button
         size="sm"
-        onClick={() =>
-          onImport({
-            stockType,
-            quantity,
-            drawing: drawing ?? undefined,
-          })
-        }
+        variant={duplicate ? "outline" : "default"}
+        onClick={attemptImport}
         disabled={isPending || reading}
       >
-        Import
+        {duplicate ? "Re-import" : "Import"}
       </Button>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Re-import {part.name}?</DialogTitle>
+            <DialogDescription>
+              This part is already in the manager
+              {duplicate && (
+                <>
+                  {" "}as <span className="font-mono">{duplicate.partNumber}</span>
+                </>
+              )}
+              . Re-importing refreshes mass / volume / bbox / thumbnail and
+              bumps the version pin. Operations, notes, and attachments stay
+              put.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmReimport}>Re-import</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
