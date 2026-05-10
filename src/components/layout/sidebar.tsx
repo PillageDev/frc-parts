@@ -10,7 +10,6 @@ import {
   Kanban,
   Layers,
   PackageOpen,
-  PanelRight,
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,7 +22,6 @@ const NAV = [
   { href: "/machines", label: "Machines", icon: Cpu },
   { href: "/templates", label: "Route Templates", icon: Layers },
   { href: "/import", label: "Onshape Import", icon: GitBranch },
-  { href: "/onshape/sidebar", label: "In-Onshape Panel", icon: PanelRight },
 ];
 
 export function Sidebar() {
